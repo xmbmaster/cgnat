@@ -1,93 +1,127 @@
 #!/bin/bash
-# WireGuard Oracle VPS Installer - Fixed & Auto
-# Works on Debian/Ubuntu/CasaOS
+# One-click WireGuard Installer (Server & Local Client)
+# Fixed all previous issues including ListenPort parsing
 
 set -e
 
 WGCONF="/etc/wireguard/wg0.conf"
-WGKEY="/etc/wireguard/privatekey"
-WGPORT=55108
-WGNET="10.1.0.0/24"
-WGCLIENT="10.1.0.2/32"
+WGCLIENTIP="/etc/wireguard/client_ip"
+WGPUBKEY="/etc/wireguard/publickey"
 
 # Colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[36m'; NC='\033[0m'
 
-# Check root
+# Must run as root
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}Please run as root${NC}"
-  exit 1
+    echo -e "${YELLOW}Re-running as root...${NC}"
+    sudo "$0" "$@"
+    exit $?
 fi
 
-# Install dependencies
-echo -e "${YELLOW}Installing WireGuard and dependencies...${NC}"
-apt update && apt install -y wireguard iptables ufw curl qrencode
+stop_wg() {
+    echo -e "${YELLOW}Stopping WireGuard if running...${NC}"
+    systemctl stop wg-quick@wg0 2>/dev/null || true
+}
 
-# Enable IP forwarding
-echo -e "${YELLOW}Enabling IP forwarding...${NC}"
-sysctl -w net.ipv4.ip_forward=1
-grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+update_install() {
+    echo -e "${YELLOW}Updating system and installing required packages...${NC}"
+    apt update
+    apt install -y wireguard iptables ufw iproute2 qrencode
+}
 
-# Generate keys
-mkdir -p /etc/wireguard
-if [ ! -f "$WGKEY" ]; then
-  echo -e "${YELLOW}Generating WireGuard keys...${NC}"
-  umask 077
-  wg genkey | tee $WGKEY | wg pubkey > /etc/wireguard/publickey
-fi
+enable_ip_forwarding() {
+    echo -e "${YELLOW}Enabling IP forwarding...${NC}"
+    sysctl -w net.ipv4.ip_forward=1
+    sed -i '/^net.ipv4.ip_forward/d' /etc/sysctl.conf
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+}
 
-SERVER_PUBKEY=$(cat /etc/wireguard/publickey)
+generate_keys() {
+    echo -e "${YELLOW}Generating WireGuard keys...${NC}"
+    umask 077
+    SERVER_PRIVATE=$(wg genkey)
+    SERVER_PUBLIC=$(echo "$SERVER_PRIVATE" | wg pubkey)
+    echo "$SERVER_PUBLIC" > $WGPUBKEY
+}
 
-# Ask for client public key
-echo -e "${YELLOW}Enter CLIENT Public Key:${NC}"
-read -r CLIENT_PUBKEY
+create_server_config() {
+    read -p "Enter VPS Public IP: " PUBLIC_IP
+    read -p "Enter VPN server IP [10.1.0.1]: " SERVER_IP
+    SERVER_IP=${SERVER_IP:-10.1.0.1}
+    read -p "Enter VPN client IP [10.1.0.2]: " CLIENT_IP
+    CLIENT_IP=${CLIENT_IP:-10.1.0.2}
+    read -p "Enter WireGuard port [55108]: " WGPORT
+    WGPORT=${WGPORT:-55108}
 
-# Ask for VPS public IP (for endpoint)
-echo -e "${YELLOW}Enter your VPS Public IP:${NC}"
-read -r PUBLIC_IP
+    echo "$CLIENT_IP" > $WGCLIENTIP
 
-# Create wg0.conf
-cat > $WGCONF <<EOF
+    echo -e "${YELLOW}Paste CLIENT Public Key: ${NC}"
+    read CLIENT_PUBKEY
+
+    mkdir -p /etc/wireguard
+    chmod 700 /etc/wireguard
+
+    cat > $WGCONF <<EOL
 [Interface]
-PrivateKey = $(cat $WGKEY)
-Address = 10.1.0.1/24
+Address = $SERVER_IP/24
+PrivateKey = $SERVER_PRIVATE
 ListenPort = $WGPORT
 
 [Peer]
 PublicKey = $CLIENT_PUBKEY
-AllowedIPs = $WGCLIENT
-Endpoint = $PUBLIC_IP:$WGPORT
+AllowedIPs = $CLIENT_IP/32
+EOL
+
+    echo -e "${GREEN}Server config created at $WGCONF${NC}"
+}
+
+create_client_config() {
+    SERVER_IP=$1
+    SERVER_PORT=$2
+    SERVER_PUBKEY=$3
+    read -p "Enter Local VPN Client IP [10.1.0.2]: " CLIENT_IP
+    CLIENT_IP=${CLIENT_IP:-10.1.0.2}
+
+    cat > wg0-client.conf <<EOL
+[Interface]
+Address = $CLIENT_IP/24
+PrivateKey = $(wg genkey)
+
+[Peer]
+PublicKey = $SERVER_PUBKEY
+AllowedIPs = 0.0.0.0/0
+Endpoint = $SERVER_IP:$SERVER_PORT
 PersistentKeepalive = 25
-EOF
+EOL
 
-chmod 600 $WGCONF
+    echo -e "${GREEN}Client config saved as wg0-client.conf${NC}"
+}
 
-# Firewall
-echo -e "${YELLOW}Configuring UFW...${NC}"
-ufw allow $WGPORT/udp
-ufw allow ssh
-ufw --force enable
+setup_firewall() {
+    echo -e "${YELLOW}Configuring UFW firewall...${NC}"
+    ufw --force reset
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow $WGPORT/udp
+    ufw enable
+}
 
-# Start WireGuard
-echo -e "${YELLOW}Starting WireGuard...${NC}"
-systemctl enable wg-quick@wg0
-systemctl start wg-quick@wg0
+start_wireguard() {
+    echo -e "${YELLOW}Starting WireGuard...${NC}"
+    systemctl enable wg-quick@wg0
+    systemctl start wg-quick@wg0
+    systemctl status wg-quick@wg0 --no-pager
+}
 
-echo -e "${GREEN}WireGuard is up and running!${NC}"
-echo -e "Server Public Key: ${SERVER_PUBKEY}"
-echo -e "Client IP: ${WGCLIENT}"
+# Main execution
+stop_wg
+update_install
+enable_ip_forwarding
+generate_keys
+create_server_config
+setup_firewall
+start_wireguard
 
-# One-click uninstall
-cat > /usr/local/bin/wg-uninstall.sh <<'UNINSTALL'
-#!/bin/bash
-systemctl stop wg-quick@wg0
-systemctl disable wg-quick@wg0
-rm -f /etc/wireguard/wg0.conf /etc/wireguard/privatekey /etc/wireguard/publickey
-ufw --force reset
-echo "WireGuard uninstalled."
-UNINSTALL
-chmod +x /usr/local/bin/wg-uninstall.sh
-echo -e "${GREEN}One-command uninstall available: wg-uninstall.sh${NC}"
+echo -e "${GREEN}WireGuard server setup complete!${NC}"
+echo -e "Server Public Key: $(cat $WGPUBKEY)"
+echo -e "Use the above public key to generate your client config."
