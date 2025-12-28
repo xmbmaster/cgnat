@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v5.1 - ALL-IN-ONE FIXED
-# VPS + Local + iptables DEBIAN 12
+# 🔥 CGNAT BYPASS v5.2 - ALL-IN-ONE FIXED
+# VPS + Local + POSTROUTING FIXED
 
 if [ $EUID != 0 ]; then
   exec sudo "$0" "$@"
@@ -64,11 +64,12 @@ AllowedIPs = $WG_CLIENT_IP/32
 PersistentKeepalive = 15
 EOF
 
-  # FIXED iptables syntax (no bad argument)
+  # FIXED POSTROUTING (use correct interface)
+  INTERFACE=$(ip route | grep default | awk '{print $5}')
   iptables -F
   iptables -t nat -F
   iptables -I INPUT 1 -p udp --dport $WGPORT -j ACCEPT
-  iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+  iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE
   for port_entry in $(echo "$SERVICE_PORTS" | tr ',' ' '); do
     port=$(echo $port_entry | cut -d'/' -f1)
     proto=$(echo $port_entry | cut -d'/' -f2)
@@ -118,12 +119,13 @@ PersistentKeepalive = 15
 EOF
 
   # Local forwarding to Docker
+  INTERFACE=$(ip route | grep default | awk '{print $5}')
   iptables -t nat -F PREROUTING POSTROUTING
   for port_entry in $(echo "$PORTS" | tr ',' ' '); do
     port=$(echo $port_entry | cut -d'/' -f1)
     proto=$(echo $port_entry | cut -d'/' -f2)
     iptables -t nat -A PREROUTING -i wg0 -p $proto --dport $port -j DNAT --to 172.17.0.2:$port
-    iptables -t nat -A POSTROUTING -o wg0 -p $proto -d 172.17.0.2 --dport $port -j MASQUERADE
+    iptables -t nat -A POSTROUTING -o $INTERFACE -p $proto -d 172.17.0.2 --dport $port -j MASQUERADE
   done
   netfilter-persistent save 2>/dev/null || true
 
@@ -191,7 +193,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v5.1             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v5.2             ║${NC}"
     echo -e "${LGREEN}${BOLD}║     ALL-IN-ONE FIXED                 ║${NC}"
     echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║  1) ☁️  VPS Server Setup              ║${NC}"
@@ -209,7 +211,7 @@ main_menu() {
     case $CHOICE in
       1) vps_server ;;
       2) echo -e "${YELLOW}Paste VPS command:${NC}"; read CMD; eval "$CMD" ;;
-      3) iptables -F; iptables -I INPUT 1 -p udp --dport 55108 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE; netfilter-persistent save; echo -e "${GREEN}Fixed${NC}" ;;
+      3) iptables -F; iptables -I INPUT 1 -p udp --dport 55108 -j ACCEPT; INTERFACE=$(ip route | grep default | awk '{print $5}'); iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE; netfilter-persistent save; echo -e "${GREEN}Fixed${NC}" ;;
       4) status_check ;;
       5) install_recovery ;;
       6) uninstall_all ;;
