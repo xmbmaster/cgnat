@@ -1,127 +1,154 @@
 #!/bin/bash
-# One-click WireGuard Installer (Server & Local Client)
-# Fixed all previous issues including ListenPort parsing
+# All-in-One WireGuard Installer (VPS / Local / Uninstall)
+# Fixed for wg-quick parsing issues
 
 set -e
 
-WGCONF="/etc/wireguard/wg0.conf"
-WGCLIENTIP="/etc/wireguard/client_ip"
-WGPUBKEY="/etc/wireguard/publickey"
+WGCONFLOC='/etc/wireguard/wg0.conf'
+WGPUBKEY='/etc/wireguard/publickey'
+WGCLIENTIPFILE='/etc/wireguard/client_ip'
+WGPORTSFILE='/etc/wireguard/forwarded_ports'
 
-# Colors
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[36m'; NC='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[36m'
+NC='\033[0m'
 
-# Must run as root
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${YELLOW}Re-running as root...${NC}"
-    sudo "$0" "$@"
-    exit $?
-fi
-
-stop_wg() {
-    echo -e "${YELLOW}Stopping WireGuard if running...${NC}"
-    systemctl stop wg-quick@wg0 2>/dev/null || true
+check_root() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "Please run as root"
+    exit 1
+  fi
 }
 
-update_install() {
-    echo -e "${YELLOW}Updating system and installing required packages...${NC}"
-    apt update
-    apt install -y wireguard iptables ufw iproute2 qrencode
+stop_wireguard() {
+  echo -e "${YELLOW}Stopping WireGuard...${NC}"
+  systemctl stop wg-quick@wg0 2>/dev/null || true
+  wg-quick down wg0 2>/dev/null || true
 }
 
-enable_ip_forwarding() {
-    echo -e "${YELLOW}Enabling IP forwarding...${NC}"
-    sysctl -w net.ipv4.ip_forward=1
-    sed -i '/^net.ipv4.ip_forward/d' /etc/sysctl.conf
+uninstall_wireguard() {
+  stop_wireguard
+  echo -e "${YELLOW}Removing WireGuard packages and configs...${NC}"
+  apt remove wireguard -y
+  rm -f $WGCONFLOC $WGPUBKEY $WGCLIENTIPFILE $WGPORTSFILE
+  systemctl disable wg-quick@wg0 >/dev/null 2>&1 || true
+  echo -e "${GREEN}Uninstalled successfully${NC}"
+  exit
+}
+
+enable_ip_forward() {
+  echo -e "${YELLOW}Enabling IP forwarding...${NC}"
+  sysctl -w net.ipv4.ip_forward=1
+  if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+  fi
+}
+
+install_dependencies() {
+  echo -e "${YELLOW}Installing required packages...${NC}"
+  apt update
+  apt install -y wireguard iptables-persistent ufw
 }
 
 generate_keys() {
-    echo -e "${YELLOW}Generating WireGuard keys...${NC}"
-    umask 077
-    SERVER_PRIVATE=$(wg genkey)
-    SERVER_PUBLIC=$(echo "$SERVER_PRIVATE" | wg pubkey)
-    echo "$SERVER_PUBLIC" > $WGPUBKEY
+  echo -e "${YELLOW}Generating WireGuard keys...${NC}"
+  mkdir -p /etc/wireguard
+  umask 077
+  wg genkey | tee $WGCONFLOC.priv | wg pubkey | tee $WGPUBKEY
+  PRIVKEY=$(cat $WGCONFLOC.priv)
+  rm -f $WGCONFLOC.priv
 }
 
-create_server_config() {
-    read -p "Enter VPS Public IP: " PUBLIC_IP
-    read -p "Enter VPN server IP [10.1.0.1]: " SERVER_IP
-    SERVER_IP=${SERVER_IP:-10.1.0.1}
-    read -p "Enter VPN client IP [10.1.0.2]: " CLIENT_IP
-    CLIENT_IP=${CLIENT_IP:-10.1.0.2}
-    read -p "Enter WireGuard port [55108]: " WGPORT
-    WGPORT=${WGPORT:-55108}
+setup_firewall() {
+  echo -e "${YELLOW}Configuring firewall...${NC}"
+  ufw allow OpenSSH
+  ufw allow $WGPORT/udp
+  ufw --force enable
+}
 
-    echo "$CLIENT_IP" > $WGCLIENTIP
+create_vps_config() {
+  echo -e "${YELLOW}Creating VPS WireGuard config...${NC}"
+  read -p "Enter VPS public IP [auto-detect]: " PUBLIC_IP
+  PUBLIC_IP=${PUBLIC_IP:-$(curl -s ifconfig.me)}
+  read -p "Enter VPN Server IP [10.1.0.1]: " SERVER_IP
+  SERVER_IP=${SERVER_IP:-10.1.0.1}
+  read -p "Enter VPN client IP [10.1.0.2]: " CLIENT_IP
+  CLIENT_IP=${CLIENT_IP:-10.1.0.2}
+  read -p "Enter WireGuard port [55108]: " WGPORT
+  WGPORT=${WGPORT:-55108}
 
-    echo -e "${YELLOW}Paste CLIENT Public Key: ${NC}"
-    read CLIENT_PUBKEY
+  CLIENT_PUBKEY=$(read -p "Paste client public key: " x; echo "$x")
 
-    mkdir -p /etc/wireguard
-    chmod 700 /etc/wireguard
-
-    cat > $WGCONF <<EOL
+  cat > $WGCONFLOC <<EOF
 [Interface]
+PrivateKey = $(cat $WGCONFLOC)
 Address = $SERVER_IP/24
-PrivateKey = $SERVER_PRIVATE
 ListenPort = $WGPORT
 
 [Peer]
 PublicKey = $CLIENT_PUBKEY
 AllowedIPs = $CLIENT_IP/32
-EOL
+EOF
 
-    echo -e "${GREEN}Server config created at $WGCONF${NC}"
+  chmod 600 $WGCONFLOC
+  systemctl enable wg-quick@wg0
+  systemctl start wg-quick@wg0
+  echo -e "${GREEN}VPS WireGuard setup complete!${NC}"
 }
 
-create_client_config() {
-    SERVER_IP=$1
-    SERVER_PORT=$2
-    SERVER_PUBKEY=$3
-    read -p "Enter Local VPN Client IP [10.1.0.2]: " CLIENT_IP
-    CLIENT_IP=${CLIENT_IP:-10.1.0.2}
+create_local_config() {
+  echo -e "${YELLOW}Creating Local WireGuard client config...${NC}"
+  read -p "Enter Server Public IP: " SERVER_PUBLIC_IP
+  read -p "Enter Local VPN IP [10.1.0.2]: " CLIENT_IP
+  CLIENT_IP=${CLIENT_IP:-10.1.0.2}
+  read -p "Enter WireGuard port [55108]: " WGPORT
+  WGPORT=${WGPORT:-55108}
+  read -p "Paste Server Public Key: " SERVER_PUBKEY
 
-    cat > wg0-client.conf <<EOL
+  cat > $WGCONFLOC <<EOF
 [Interface]
+PrivateKey = $(cat $WGPUBKEY)
 Address = $CLIENT_IP/24
-PrivateKey = $(wg genkey)
 
 [Peer]
 PublicKey = $SERVER_PUBKEY
 AllowedIPs = 0.0.0.0/0
-Endpoint = $SERVER_IP:$SERVER_PORT
+Endpoint = $SERVER_PUBLIC_IP:$WGPORT
 PersistentKeepalive = 25
-EOL
+EOF
 
-    echo -e "${GREEN}Client config saved as wg0-client.conf${NC}"
+  chmod 600 $WGCONFLOC
+  systemctl enable wg-quick@wg0
+  systemctl start wg-quick@wg0
+  echo -e "${GREEN}Local WireGuard client setup complete!${NC}"
 }
 
-setup_firewall() {
-    echo -e "${YELLOW}Configuring UFW firewall...${NC}"
-    ufw --force reset
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow $WGPORT/udp
-    ufw enable
+check_existing() {
+  if [[ -f $WGCONFLOC ]]; then
+    echo -e "${YELLOW}Existing WireGuard config detected.${NC}"
+  fi
 }
 
-start_wireguard() {
-    echo -e "${YELLOW}Starting WireGuard...${NC}"
-    systemctl enable wg-quick@wg0
-    systemctl start wg-quick@wg0
-    systemctl status wg-quick@wg0 --no-pager
-}
+# ******** MAIN ********
+check_root
+echo ""
+echo -e "Select option:"
+echo "1) VPS Server"
+echo "2) Local Client"
+echo "3) Uninstall WireGuard"
+read -p "Choice: " CHOICE
 
-# Main execution
-stop_wg
-update_install
-enable_ip_forwarding
+install_dependencies
+enable_ip_forward
 generate_keys
-create_server_config
 setup_firewall
-start_wireguard
+check_existing
 
-echo -e "${GREEN}WireGuard server setup complete!${NC}"
-echo -e "Server Public Key: $(cat $WGPUBKEY)"
-echo -e "Use the above public key to generate your client config."
+case $CHOICE in
+  1) create_vps_config ;;
+  2) create_local_config ;;
+  3) uninstall_wireguard ;;
+  *) echo "Invalid choice"; exit 1 ;;
+esac
