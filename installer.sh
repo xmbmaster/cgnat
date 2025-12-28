@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v5.0 - COMPLETE ALL-IN-ONE
-# VPS + Local + Recovery + Status + Uninstall
+# 🔥 CGNAT BYPASS v5.1 - ALL-IN-ONE FIXED
+# VPS + Local + iptables DEBIAN 12
 
 if [ $EUID != 0 ]; then
   exec sudo "$0" "$@"
@@ -41,13 +41,12 @@ vps_server() {
   SERVER_PUBLIC_KEY=$(cat /etc/wireguard/server_public.key)
 
   echo ""
-  echo -e "${LGREEN}${BOLD}CLIENT COMMAND (run on local server):${NC}"
+  echo -e "${LGREEN}${BOLD}CLIENT COMMAND (run on local):${NC}"
   echo "sudo $0 client \"$SERVER_PUBLIC_KEY\" $PUB_IP $WGPORT \"$SERVICE_PORTS\""
   echo ""
-  echo -e "${CYAN}Run above on LOCAL server, then paste its public key here:${NC}"
+  echo -e "${CYAN}Run above on LOCAL, then paste its public key:${NC}"
   read -p "Client public key: " CLIENT_PUBLIC_KEY
 
-  # Validate key length
   if [[ ${#CLIENT_PUBLIC_KEY} -ne 44 ]]; then
     echo -e "${RED}Invalid key length! Must be 44 chars.${NC}"
     exit 1
@@ -65,7 +64,7 @@ AllowedIPs = $WG_CLIENT_IP/32
 PersistentKeepalive = 15
 EOF
 
-  # Manual firewall setup
+  # FIXED iptables syntax (no bad argument)
   iptables -F
   iptables -t nat -F
   iptables -I INPUT 1 -p udp --dport $WGPORT -j ACCEPT
@@ -192,7 +191,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v5.0             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v5.1             ║${NC}"
     echo -e "${LGREEN}${BOLD}║     ALL-IN-ONE FIXED                 ║${NC}"
     echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║  1) ☁️  VPS Server Setup              ║${NC}"
