@@ -100,4 +100,47 @@ generate_client_conf() {
   echo "PublicKey = $PK_FOR_SERVER" >> $WGCONFLOC
   echo "AllowedIPs = 0.0.0.0/0" >> $WGCONFLOC
   echo "Endpoint = $PUBLIC_IP:$WGPORT" >> $WGCONFLOC
-  echo "PersistentKeepalive = 25"
+  echo "PersistentKeepalive = 25" >> $WGCONFLOC
+
+  echo -e "${GREEN}Client config created at $WGCONFLOC${NC}"
+}
+
+start_wireguard() {
+  systemctl enable wg-quick@wg0
+  systemctl start wg-quick@wg0
+  echo -e "${GREEN}WireGuard started${NC}"
+}
+
+#---------------- Main Menu ----------------#
+
+clear
+echo -e "${GREEN}WireGuard Auto Installer${NC}"
+echo "1) Setup VPS Server"
+echo "2) Setup Local Client"
+echo "3) Uninstall WireGuard"
+read -p "Select option [1-3]: " CHOICE
+
+case $CHOICE in
+1)
+  stop_wireguard
+  install_required
+  enable_ip_forwarding
+  create_keys
+  generate_server_conf
+  start_wireguard
+  ;;
+2)
+  stop_wireguard
+  install_required
+  enable_ip_forwarding
+  generate_client_conf
+  start_wireguard
+  ;;
+3)
+  uninstall_all
+  ;;
+*)
+  echo "Invalid option"
+  exit
+  ;;
+esac
