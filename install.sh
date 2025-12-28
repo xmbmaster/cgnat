@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS WireGuard ALL-IN-ONE (v1.0.0) - FIXED TRAFFIC + MENU
-# Works: Ubuntu/Oracle Cloud 2025 | All ports forward correctly
+# 🔥 CGNAT BYPASS WireGuard v1.1.0 - FIXED ALL ERRORS
+# Ubuntu 20.04/22.04/24.04 + Oracle Cloud ✅
 
 if [ $EUID != 0 ]; then exec sudo "$0" "$@"; fi
 
@@ -8,147 +8,134 @@ WGCONF="/etc/wireguard/wg0.conf"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 LGREEN='\033[92m'; CYAN='\033[36m'; BOLD='\033[1m'
 
-# ==================== FUNCTIONS ====================
 uninstall_all() {
-  echo -e "${YELLOW}${BOLD}🗑️  FULL UNINSTALL${NC}"
+  echo -e "${YELLOW}${BOLD}🗑️  FULL CLEANUP${NC}"
   systemctl stop wg-quick@wg0 2>/dev/null; wg-quick down wg0 2>/dev/null
-  rm -f $WGCONF /etc/wireguard/* /etc/iptables/rules.v*
+  rm -rf /etc/wireguard $WGCONF /etc/iptables/rules.v*
   iptables -F -t nat -F -t mangle -F -X -t nat -X -t mangle -X
   iptables -P INPUT ACCEPT -P FORWARD ACCEPT -P OUTPUT ACCEPT
-  ufw --force disable >/dev/null 2>&1; ufw --force reset >/dev/null 2>&1
-  apt purge -y wireguard wireguard-tools ufw iptables-persistent netfilter-persistent 2>/dev/null || true
-  apt autoremove -y; sysctl -p 2>/dev/null
-  echo -e "${GREEN}${BOLD}✅ CLEAN UNINSTALL COMPLETE${NC}"; exit 0
+  ufw disable 2>/dev/null || true
+  apt purge -y wireguard wireguard-tools iptables-persistent netfilter-persistent -y 2>/dev/null || true
+  apt autoremove -y
+  echo -e "${GREEN}✅ CLEAN${NC}"; exit 0
 }
 
-get_public_info() {
-  PUBIP=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "DETECT")
-  INT=$(ip route | grep default | awk '{print $5}' | head -1)
-  [[ -z $INT ]] && INT=$(ip -o link | awk -F': ' '{print $2}' | grep -E '^(eth|ens)' | head -1)
-  WGPORT=${WGPORT:-55108}
-  echo "$PUBIP $INT"
+install_prereqs() {
+  apt update
+  apt install -y wireguard wireguard-tools curl iputils-ping netfilter-persistent
+  echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+  sysctl -p
 }
 
 show_status() {
-  clear; echo -e "${CYAN}${BOLD}📊 TUNNEL STATUS${NC}"
-  echo "=== WireGuard ==="
-  wg show 2>/dev/null || echo "❌ No tunnel active"
-  echo -ne "\n=== Services ===\n"
-  systemctl status wg-quick@wg0 2>/dev/null | head -10
-  echo -ne "\n=== UFW ===\n"
-  ufw status 2>/dev/null | head -8
-  echo -ne "\n=== iptables NAT ===\n"
-  iptables -t nat -L -n -v | grep -E "(DNAT|SNAT)" || echo "❌ No forwarding rules"
-  echo -ne "\n${YELLOW}Press Enter...${NC}"; read
+  clear; echo -e "${CYAN}${BOLD}📊 STATUS${NC}"
+  wg show 2>/dev/null || echo "No tunnel"
+  echo -e "\n${GREEN}Services:${NC}"; systemctl status wg-quick@wg0 2>/dev/null | head -8
+  echo -e "\n${GREEN}UFW:${NC}"; ufw status 2>/dev/null | head -6
+  echo -e "\n${GREEN}NAT Rules:${NC}"; iptables -t nat -L -n | grep -E "(DNAT|SNAT)" || echo "No rules"
+  read -p "Press Enter..."
 }
 
-fix_traffic_forwarding() {
-  echo -e "${LGREEN}${BOLD}🔧 FIXING TRAFFIC FORWARDING${NC}"
-  
+fix_forwarding() {
   CLIENT_IP=$(cat /etc/wireguard/client_ip 2>/dev/null || echo "10.1.0.2")
   PORTS=$(cat /etc/wireguard/ports 2>/dev/null || echo "80/tcp,443/tcp")
-  INT=$(get_public_info | cut -d' ' -f2)
-  PUBIP=$(get_public_info | cut -d' ' -f1)
+  INT=$(ip route | grep default | awk '{print $5}' | head -1)
   
-  # Clear broken rules
-  iptables -t nat -F PREROUTING; iptables -t nat -F POSTROUTING
-  
-  # IP Forwarding
-  echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-  sysctl -p
-  
-  # Add NAT rules for ALL ports
+  iptables -t nat -F
   for p in $(echo $PORTS | tr ',' '\n'); do
     PORT=$(echo $p | cut -d/ -f1); PROTO=$(echo $p | cut -d/ -f2)
-    echo "➤ Forwarding ${PROTO^^} $PORT → $CLIENT_IP"
     iptables -t nat -A PREROUTING -p $PROTO --dport $PORT -j DNAT --to $CLIENT_IP
   done
-  
-  # SNAT for return traffic
-  iptables -t nat -A POSTROUTING -o $INT -j SNAT --to-source $PUBIP
-  
-  # Install persistent
-  apt install -y iptables-persistent netfilter-persistent
+  iptables -t nat -A POSTROUTING -o $INT -j MASQUERADE
   netfilter-persistent save
-  
-  # Fix UFW
-  ufw --force reset
-  WGPORT=$(wg show wg0 listen-port 2>/dev/null || ss -ulnp | grep wireguard | awk '{print $4}' | cut -d: -f2 || echo 55108)
-  ufw allow $WGPORT/udp; ufw allow OpenSSH
-  for p in $(echo $PORTS | tr ',' '\n'); do ufw allow $p; done
-  ufw --force enable
-  
   systemctl restart wg-quick@wg0
-  echo -e "${GREEN}${BOLD}✅ TRAFFIC FIXED! Test: curl VPS_IP:YOUR_PORT${NC}"
+  echo -e "${GREEN}✅ Forwarding fixed${NC}"
 }
 
 server_setup() {
-  echo -e "${LGREEN}${BOLD}☁️  VPS SERVER SETUP${NC}"
-  apt update && apt install -y wireguard wireguard-tools ufw iptables-persistent iputils-ping curl
+  echo -e "${LGREEN}${BOLD}☁️  VPS SERVER${NC}"
+  install_prereqs
   
-  read -p "VPS Public IP [auto]: " PUBIP
-  [[ -z $PUBIP ]] && PUBIP=$(get_public_info | cut -d' ' -f1)
-  read -p "WG Server IP [10.1.0.1]: " WG_SIP; WG_SIP=${WG_SIP:-10.1.0.1}
-  read -p "WG Client IP [10.1.0.2]: " WG_CIP; WG_CIP=${WG_CIP:-10.1.0.2}
-  read -p "WG UDP Port [55108]: " WGPORT; WGPORT=${WGPORT:-55108}
-  read -p "Service Ports [80/tcp,443/tcp,1901/tcp,8096/tcp]: " PORTS
+  read -p "Public IP [auto]: " PUBIP
+  [[ -z $PUBIP ]] && PUBIP=$(curl -s ifconfig.me)
+  read -p "Server IP [10.1.0.1]: " WG_SIP; WG_SIP=${WG_SIP:-10.1.0.1}
+  read -p "Client IP [10.1.0.2]: " WG_CIP; WG_CIP=${WG_CIP:-10.1.0.2}
+  read -p "UDP Port [55108]: " WGPORT; WGPORT=${WGPORT:-55108}
+  read -p "Ports [80/tcp,443/tcp]: " PORTS; PORTS=${PORTS:-"80/tcp,443/tcp"}
   
   mkdir -p /etc/wireguard
   echo $WG_CIP > /etc/wireguard/client_ip
   echo $PORTS > /etc/wireguard/ports
   
   # Generate keys
-  wg genkey | tee /etc/wireguard/private | wg pubkey > /etc/wireguard/publickey
-  SERVER_PUB=$(cat /etc/wireguard/publickey)
+  wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
+  chmod 600 /etc/wireguard/private.key
+  SERVER_PUB=$(cat /etc/wireguard/public.key)
   
-  cat > $WGCONF << EOF
-[Interface]
-PrivateKey = $(cat /etc/wireguard/private)
-Address = $WG_SIP/24
-ListenPort = $WGPORT
-
-PostUp = iptables -t nat -A POSTROUTING -o %i -j SNAT --to-source $PUBIP
-PostDown = iptables -t nat -D POSTROUTING -o %i -j SNAT --to-source $PUBIP
-
-$(for p in $(echo $PORTS | tr ',' '\n'); do 
-  proto=\$(echo \$p | cut -d/ -f2); port=\$(echo \$p | cut -d/ -f1)
-  echo "PostUp = iptables -t nat -A PREROUTING -p \$proto --dport \$port -j DNAT --to $WG_CIP"
-  echo "PostDown = iptables -t nat -D PREROUTING -p \$proto --dport \$port -j DNAT --to $WG_CIP"
-done)
-
-[Peer]
-PublicKey = PLACEHOLDER_CLIENT_PUBKEY
-AllowedIPs = $WG_CIP/32
-EOF
-  
-  echo -e "\n${YELLOW}${BOLD}📱 CLIENT SETUP COMMAND:${NC}"
+  echo -e "\n${YELLOW}${BOLD}=== CLIENT COMMAND ===${NC}"
   echo "sudo $0 client \"$SERVER_PUB\" $PUBIP $WGPORT \"$PORTS\""
-  echo -e "${CYAN}Run this on your LOCAL SERVER, then paste CLIENT public key here:${NC}"
+  echo -e "${CYAN}Run on LOCAL SERVER, then paste its public key:${NC}"
   read -p "Client Public Key: " CLIENT_PUB
   
-  sed -i "s/PLACEHOLDER_CLIENT_PUBKEY/$CLIENT_PUB/" $WGCONF
+  # FIXED CONFIG - No syntax errors
+  cat > $WGCONF << 'EOF'
+[Interface]
+PrivateKey = SERVER_PRIVATE_KEY
+Address = WG_SERVER_IP/24
+ListenPort = WG_PORT
+
+PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE
+EOF
+  
+  # Add port forwarding rules
+  for p in $(echo $PORTS | tr ',' '\n'); do
+    PROTO=$(echo $p | cut -d/ -f2); PORT=$(echo $p | cut -d/ -f1)
+    echo "PostUp = iptables -t nat -A PREROUTING -p $PROTO --dport $PORT -j DNAT --to $WG_CIP" >> $WGCONF
+    echo "PostDown = iptables -t nat -D PREROUTING -p $PROTO --dport $PORT -j DNAT --to $WG_CIP" >> $WGCONF
+  done
+  
+  # Replace variables
+  sed -i "s|SERVER_PRIVATE_KEY|$(cat /etc/wireguard/private.key)|g" $WGCONF
+  sed -i "s/WG_SERVER_IP/$WG_SIP/g" $WGCONF
+  sed -i "s/WG_PORT/$WGPORT/g" $WGCONF
+  
+  echo "[Peer]
+PublicKey = $CLIENT_PUB
+AllowedIPs = $WG_CIP/32" >> $WGCONF
+  
+  # Firewall
+  ufw reset 2>/dev/null || true
+  ufw allow $WGPORT/udp
+  ufw allow OpenSSH
+  for p in $(echo $PORTS | tr ',' '\n'); do ufw allow $p; done
+  ufw enable
   
   systemctl enable --now wg-quick@wg0
-  sleep 3; fix_traffic_forwarding
-  echo -e "${GREEN}${BOLD}✅ SERVER READY!${NC}"
+  sleep 3
+  echo -e "${GREEN}✅ SERVER READY!${NC}"
+  fix_forwarding
 }
 
 client_setup() {
-  SERVER_PUB=$1; PUBIP=$2; WGPORT=${3:-55108}; PORTS=${4:-"80/tcp,443/tcp"}
-  WG_CIP=10.1.0.2; WG_SIP=10.1.0.1
+  SERVER_PUB=$1; PUBIP=$2; WGPORT=$3; PORTS=$4
+  WG_CIP="10.1.0.2"; WG_SIP="10.1.0.1"
   
-  echo -e "${LGREEN}${BOLD}🏠 LOCAL CLIENT SETUP${NC}"
-  apt update && apt install -y wireguard wireguard-tools iputils-ping curl
+  echo -e "${LGREEN}${BOLD}🏠 LOCAL CLIENT${NC}"
+  install_prereqs
   
   mkdir -p /etc/wireguard
   echo $PORTS > /etc/wireguard/ports
   
-  wg genkey | tee /etc/wireguard/private | wg pubkey > /etc/wireguard/publickey
-  CLIENT_PUB=$(cat /etc/wireguard/publickey)
+  wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
+  chmod 600 /etc/wireguard/private.key
+  CLIENT_PUB=$(cat /etc/wireguard/public.key)
+  
+  echo -e "${GREEN}${BOLD}YOUR PUBLIC KEY: $CLIENT_PUB${NC}"
   
   cat > $WGCONF << EOF
 [Interface]
-PrivateKey = $(cat /etc/wireguard/private)
+PrivateKey = $(cat /etc/wireguard/private.key)
 Address = $WG_CIP/24
 
 [Peer]
@@ -160,62 +147,43 @@ EOF
   
   systemctl enable --now wg-quick@wg0
   sleep 5
-  if ping -c 3 $WG_SIP >/dev/null 2>&1; then
-    echo -e "${GREEN}${BOLD}✅ CLIENT CONNECTED! Tunnel UP${NC}"
-  else
-    echo -e "${YELLOW}❌ Ping failed - check VPS firewall/Oracle VCN${NC}"
-  fi
-  echo -e "${GREEN}Your Public Key: $CLIENT_PUB${NC}"
+  ping -c 3 $WG_SIP >/dev/null 2>&1 && echo -e "${GREEN}✅ TUNNEL UP${NC}" || echo -e "${YELLOW}Check VPS firewall${NC}"
 }
 
-# ==================== MAIN MENU ====================
+# MAIN MENU
 main_menu() {
   while true; do
     clear
-    PUBINFO=$(get_public_info)
-    echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v1.0.0           ║${NC}"
-    echo -e "${LGREEN}${BOLD}║     WireGuard Tunnel Manager         ║${NC}"
-    echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
+    echo -e "${LGREEN}${BOLD}╔══════════════════════╗${NC}"
+    echo -e "${LGREEN}${BOLD}║   CGNAT BYPASS v1.1  ║${NC}"
+    echo -e "${LGREEN}${BOLD}╠══════════════════════╣${NC}"
+    echo -e "${LGREEN}${BOLD}║ 1) ☁️  VPS Server    ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 2) 🏠 Local Client   ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 3) 🔧 Fix Forwarding ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 4) 🔄 Restart        ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 5) 📊 Status         ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 6) 🗑️  Uninstall     ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 7) ❌ Exit           ║${NC}"
+    echo -e "${LGREEN}${BOLD}╚══════════════════════╝${NC}"
     
-    if [[ -f $WGCONF ]]; then
-      if grep -q "Endpoint" $WGCONF; then
-        echo -e "${YELLOW}║  🏠 LOCAL CLIENT $(ping -c1 10.1.0.1 >/dev/null 2>&1 && echo "✅ UP" || echo "❌ DOWN")    ║${NC}"
-      else
-        echo -e "${YELLOW}║  ☁️  VPS SERVER $(ping -c1 10.1.0.2 >/dev/null 2>&1 && echo "✅ UP" || echo "⏳ WAIT") ║${NC}"
-      fi
-    fi
-    
-    echo -e "${LGREEN}${BOLD}║                                      ║${NC}"
-    echo -e "${LGREEN}${BOLD}║  1) ☁️  VPS SERVER Setup             ║${NC}"
-    echo -e "${LGREEN}${BOLD}║  2) 🏠 Local CLIENT Setup            ║${NC}"
-    echo -e "${LGREEN}${BOLD}║  3) 🔧 Fix Traffic/Ports             ║${NC}"
-    echo -e "${LGREEN}${BOLD}║  4) 🔄 Restart Tunnel                ║${NC}"
-    echo -e "${LGREEN}${BOLD}║  5) 📊 Status Check                  ║${NC}"
-    echo -e "${LGREEN}${BOLD}║  6) 🗑️  FULL UNINSTALL              ║${NC}"
-    echo -e "${LGREEN}${BOLD}║  7) ❌ Exit                          ║${NC}"
-    echo -e "${LGREEN}${BOLD}╚══════════════════════════════════════╝${NC}"
-    
-    echo -ne "\n${CYAN}${BOLD}Choose (1-7): ${NC}"; read -r CHOICE
+    echo -ne "\n${CYAN}Choose: ${NC}"; read CHOICE
     
     case $CHOICE in
       1) server_setup ;;
-      2) echo -e "${YELLOW}Paste VPS server command:${NC}"; read -r CMD; eval $CMD ;;
-      3) fix_traffic_forwarding ;;
-      4) systemctl restart wg-quick@wg0 && echo -e "${GREEN}🔄 Restarted${NC}" || echo -e "${RED}Failed${NC}" ;;
+      2) echo -e "${YELLOW}Paste VPS command:${NC}"; read CMD; eval $CMD ;;
+      3) fix_forwarding ;;
+      4) systemctl restart wg-quick@wg0 && echo "${GREEN}Restarted${NC}" || echo "${RED}Failed${NC}" ;;
       5) show_status ;;
       6) uninstall_all ;;
-      7) exit 0 ;;
-      *) echo -e "${RED}Invalid${NC}"; sleep 1 ;;
+      7) exit ;;
+      *) echo "${RED}Invalid${NC}"; sleep 1 ;;
     esac
   done
 }
 
-# Command line args
-case "${1:-}" in
-  client) shift; client_setup "$@";;
+case "${1:-}" in client) shift; client_setup "$@";;
   uninstall|remove) uninstall_all;;
-  status|check) show_status;;
-  fix|repair) fix_traffic_forwarding;;
+  status) show_status;;
+  fix) fix_forwarding;;
   *) main_menu ;;
 esac
