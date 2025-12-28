@@ -1,112 +1,115 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v4.1 - NO PLACEHOLDERS + BULLETPROOF
-# VPS + Local + Auto-Fix + Recovery ✅
+# 🔥 CGNAT BYPASS v5.0 - COMPLETE ALL-IN-ONE
+# VPS + Local + Recovery + Status + Uninstall
 
-if [ $EUID != 0 ]; then exec sudo "$0" "$@"; fi
+if [ $EUID != 0 ]; then
+  exec sudo "$0" "$@"
+  exit $?
+fi
 
 WGCONF="/etc/wireguard/wg0.conf"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 LGREEN='\033[92m'; CYAN='\033[36m'; BOLD='\033[1m'
 
-fix_system() {
+# ==================== SYSTEM SETUP ====================
+setup_system() {
   apt update >/dev/null 2>&1
-  apt install -y wireguard wireguard-tools iptables netfilter-persistent curl iputils-ping
-  sysctl -w net.ipv4.ip_forward=1
+  apt install -y wireguard wireguard-tools iptables curl iputils-ping netfilter-persistent
+  sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
   echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 }
 
-# ==================== VPS SERVER (NO PLACEHOLDER BUG) ====================
-vps_setup() {
+# ==================== VPS SERVER ====================
+vps_server() {
   echo -e "${LGREEN}${BOLD}☁️  VPS SERVER SETUP${NC}"
-  fix_system
-  
-  echo -e "${YELLOW}${BOLD}ORACLE VCN:${NC} UDP 55108 + service ports"
-  read -p "Press Enter AFTER VCN rules added..."
-  
-  WGPORT=55108; WG_SIP="10.1.0.1"; WG_CIP="10.1.0.2"
-  PUBIP=$(curl -s ifconfig.me 2>/dev/null || echo "DETECT")
-  read -p "Public IP [$PUBIP]: " INPUT; [[ -n "$INPUT" ]] && PUBIP=$INPUT
-  read -p "Service Ports [8098/tcp]: " PORTS; PORTS=${PORTS:-"8098/tcp"}
-  
+  setup_system
+
+  WGPORT=55108
+  WG_SERVER_IP="10.1.0.1"
+  WG_CLIENT_IP="10.1.0.2"
+  PUB_IP=$(curl -s ifconfig.me)
+  read -p "Public IP [$PUB_IP]: " input_ip
+  [[ -n "$input_ip" ]] && PUB_IP="$input_ip"
+  read -p "Service Ports [8098/tcp]: " SERVICE_PORTS
+  SERVICE_PORTS=${SERVICE_PORTS:-"8098/tcp"}
+
   mkdir -p /etc/wireguard
-  echo $WG_CIP > /etc/wireguard/client_ip
-  echo $PORTS > /etc/wireguard/ports
-  
-  # Generate keys
-  wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
-  chmod 600 /etc/wireguard/private.key
-  SERVER_PUB=$(cat /etc/wireguard/public.key)
-  
-  echo -e "\n${LGREEN}${BOLD}CLIENT COMMAND:${NC}"
-  echo "sudo $0 client \"$SERVER_PUB\" $PUBIP $WGPORT \"$PORTS\""
-  
-  # GET CLIENT KEY FIRST
-  echo -e "${CYAN}On LOCAL server, run client command above, then paste its public key:${NC}"
-  read -p "CLIENT PUBLIC KEY: " CLIENT_PUB
-  
-  # VALIDATE KEY
-  if [[ ${#CLIENT_PUB} -ne 44 ]]; then
+  echo "$WG_CLIENT_IP" > /etc/wireguard/client_ip
+
+  wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+  chmod 600 /etc/wireguard/server_private.key
+  SERVER_PUBLIC_KEY=$(cat /etc/wireguard/server_public.key)
+
+  echo ""
+  echo -e "${LGREEN}${BOLD}CLIENT COMMAND (run on local server):${NC}"
+  echo "sudo $0 client \"$SERVER_PUBLIC_KEY\" $PUB_IP $WGPORT \"$SERVICE_PORTS\""
+  echo ""
+  echo -e "${CYAN}Run above on LOCAL server, then paste its public key here:${NC}"
+  read -p "Client public key: " CLIENT_PUBLIC_KEY
+
+  # Validate key length
+  if [[ ${#CLIENT_PUBLIC_KEY} -ne 44 ]]; then
     echo -e "${RED}Invalid key length! Must be 44 chars.${NC}"
     exit 1
   fi
-  
-  # BUILD CONFIG DIRECTLY (NO PLACEHOLDER)
+
   cat > $WGCONF << EOF
 [Interface]
-PrivateKey = $(cat /etc/wireguard/private.key)
-Address = $WG_SIP/24
+PrivateKey = $(cat /etc/wireguard/server_private.key)
+Address = $WG_SERVER_IP/24
 ListenPort = $WGPORT
 
 [Peer]
-PublicKey = $CLIENT_PUB
-AllowedIPs = $WG_CIP/32
+PublicKey = $CLIENT_PUBLIC_KEY
+AllowedIPs = $WG_CLIENT_IP/32
 PersistentKeepalive = 15
 EOF
-  
-  echo -e "${GREEN}✅ Config created:${NC}"
-  cat $WGCONF
-  
-  # MANUAL FIREWALL
-  iptables -F; iptables -t nat -F
+
+  # Manual firewall setup
+  iptables -F
+  iptables -t nat -F
   iptables -I INPUT 1 -p udp --dport $WGPORT -j ACCEPT
   iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-  for p in $(echo "$PORTS" | tr ',' '\n'); do 
-    PORT=$(echo $p | cut -d/ -f1); PROTO=$(echo $p | cut -d/ -f2 2>/dev/null || echo tcp)
-    iptables -t nat -A PREROUTING -p $PROTO --dport $PORT -j DNAT --to $WG_CIP
+  for port_entry in $(echo "$SERVICE_PORTS" | tr ',' ' '); do
+    port=$(echo $port_entry | cut -d'/' -f1)
+    proto=$(echo $port_entry | cut -d'/' -f2)
+    iptables -t nat -A PREROUTING -p $proto --dport $port -j DNAT --to $WG_CLIENT_IP
   done
   netfilter-persistent save 2>/dev/null || true
-  
+
   ufw allow $WGPORT/udp 2>/dev/null || true
   ufw allow OpenSSH 2>/dev/null || true
-  
+  for port_entry in $(echo "$SERVICE_PORTS" | tr ',' ' '); do
+    ufw allow "$port_entry" 2>/dev/null || true
+  done
+
   systemctl enable --now wg-quick@wg0
   sleep 5
-  
+
   install_recovery
-  echo -e "${GREEN}${BOLD}✅ VPS READY!${NC}"
-  echo -e "${YELLOW}Verify: wg show${NC}"
+  echo -e "${GREEN}${BOLD}✅ VPS SERVER READY${NC}"
 }
 
 # ==================== LOCAL CLIENT ====================
-local_setup() {
+local_client() {
   SERVER_PUB=$1; PUBIP=$2; WGPORT=$3; PORTS=$4
-  WG_CIP="10.1.0.2"; WG_SIP="10.1.0.1"
-  
-  echo -e "${LGREEN}${BOLD}🏠 LOCAL CLIENT${NC}"
-  fix_system
-  
+  WG_CLIENT_IP="10.1.0.2"
+  WG_SERVER_IP="10.1.0.1"
+
+  echo -e "${LGREEN}${BOLD}🏠 LOCAL CLIENT SETUP${NC}"
+  setup_system
+
   mkdir -p /etc/wireguard
-  wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
-  chmod 600 /etc/wireguard/private.key
-  CLIENT_PUB=$(cat /etc/wireguard/public.key)
-  
-  echo -e "${GREEN}${BOLD}YOUR PUBLIC KEY: $CLIENT_PUB${NC}"
-  echo -e "${GREEN}${BOLD}Copy this to VPS server!${NC}"
-  
+  wg genkey | tee /etc/wireguard/client_private.key | wg pubkey > /etc/wireguard/client_public.key
+  chmod 600 /etc/wireguard/client_private.key
+  CLIENT_PUBLIC_KEY=$(cat /etc/wireguard/client_public.key)
+
+  echo -e "${GREEN}${BOLD}YOUR PUBLIC KEY (give to VPS): $CLIENT_PUBLIC_KEY${NC}"
+
   cat > $WGCONF << EOF
 [Interface]
-PrivateKey = $(cat /etc/wireguard/private.key)
-Address = $WG_CIP/24
+PrivateKey = $(cat /etc/wireguard/client_private.key)
+Address = $WG_CLIENT_IP/24
 
 [Peer]
 PublicKey = $SERVER_PUB
@@ -114,28 +117,29 @@ Endpoint = $PUBIP:$WGPORT
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 15
 EOF
-  
-  # Local Docker forwarding
+
+  # Local forwarding to Docker
   iptables -t nat -F PREROUTING POSTROUTING
-  for p in $(echo "$PORTS" | tr ',' '\n'); do 
-    PORT=$(echo $p | cut -d/ -f1); PROTO=$(echo $p | cut -d/ -f2 2>/dev/null || echo tcp)
-    iptables -t nat -A PREROUTING -i wg0 -p $PROTO --dport $PORT -j DNAT --to 172.17.0.2:$PORT
-    iptables -t nat -A POSTROUTING -o wg0 -p $PROTO -d 172.17.0.2 --dport $PORT -j MASQUERADE
+  for port_entry in $(echo "$PORTS" | tr ',' ' '); do
+    port=$(echo $port_entry | cut -d'/' -f1)
+    proto=$(echo $port_entry | cut -d'/' -f2)
+    iptables -t nat -A PREROUTING -i wg0 -p $proto --dport $port -j DNAT --to 172.17.0.2:$port
+    iptables -t nat -A POSTROUTING -o wg0 -p $proto -d 172.17.0.2 --dport $port -j MASQUERADE
   done
   netfilter-persistent save 2>/dev/null || true
-  
+
   systemctl enable --now wg-quick@wg0
   sleep 5
-  
-  if ping -c 3 $WG_SIP >/dev/null 2>&1; then
-    echo -e "${GREEN}${BOLD}✅ TUNNEL UP${NC}"
+
+  if ping -c 3 $WG_SERVER_IP >/dev/null 2>&1; then
+    echo -e "${GREEN}${BOLD}✅ TUNNEL CONNECTED${NC}"
   else
-    echo -e "${RED}${BOLD}❌ VPS DOWN${NC}"
-    echo -e "${YELLOW}On VPS run: wg show${NC}"
+    echo -e "${RED}${BOLD}❌ VPS NOT RESPONDING${NC}"
+    echo -e "${YELLOW}Check VPS: wg show${NC}"
   fi
 }
 
-# ==================== RECOVERY ====================
+# ==================== AUTO-RECOVERY ====================
 install_recovery() {
   cat > /etc/systemd/system/wg-monitor.service << 'EOF'
 [Unit]
@@ -152,71 +156,74 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable --now wg-monitor.service 2>/dev/null || true
-  echo -e "${GREEN}✅ RECOVERY ON${NC}"
+  echo -e "${GREEN}${BOLD}✅ AUTO-RECOVERY INSTALLED${NC}"
 }
 
-diagnostics() {
-  clear; echo -e "${CYAN}${BOLD}DIAGNOSTICS${NC}"
+# ==================== STATUS CHECK ====================
+status_check() {
+  clear
+  echo -e "${CYAN}${BOLD}🔍 STATUS${NC}"
   wg show 2>/dev/null || echo "❌ No tunnel"
-  echo -e "\nServices:"
+  echo -e "\n${CYAN}Services:${NC}"
   systemctl status wg-quick@wg0 2>/dev/null | head -10
-  echo -e "\nUDP 55108:"
-  ss -ulnp | grep 55108 || echo "❌ Closed"
-  echo -e "\nNAT:"
-  iptables -t nat -L | grep DNAT || echo "❌ None"
-  echo -e "\nLogs:"
-  journalctl -u wg-quick@wg0 -n 5
-  read -p "Enter..."
+  echo -e "\n${CYAN}Recovery:${NC}"
+  systemctl status wg-monitor 2>/dev/null | head -5
+  echo -e "\n${CYAN}NAT Rules:${NC}"
+  iptables -t nat -L -n | grep DNAT || echo "❌ No rules"
+  read -p "Press Enter..."
 }
 
+# ==================== UNINSTALL ====================
 uninstall_all() {
-  systemctl stop wg-quick@wg0 wg-monitor
+  systemctl stop wg-quick@wg0 wg-monitor 2>/dev/null || true
   rm -rf /etc/wireguard $WGCONF /etc/iptables/rules.v* /etc/systemd/system/wg-*
-  iptables -F -t nat -F -X; iptables -P INPUT ACCEPT
-  netfilter-persistent save 2>/dev/null
-  apt purge -y wireguard* netfilter-persistent iptables
+  iptables -F -t nat -F -X -t nat -X -t mangle -X
+  iptables -P INPUT ACCEPT -P FORWARD ACCEPT -P OUTPUT ACCEPT
+  ufw disable 2>/dev/null || true
+  apt purge -y wireguard wireguard-tools netfilter-persistent iptables ufw 2>/dev/null || true
+  apt autoremove -y 2>/dev/null || true
   systemctl daemon-reload
-  echo -e "${GREEN}✅ CLEAN${NC}"
+  echo -e "${GREEN}${BOLD}✅ CLEAN COMPLETE${NC}"
+  exit 0
 }
 
 # ==================== MAIN MENU ====================
 main_menu() {
   while true; do
     clear
-    echo -e "${LGREEN}${BOLD}╔═══════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║ CGNAT v4.1 FIXED      ║${NC}"
-    echo -e "${LGREEN}${BOLD}║ NO PLACEHOLDER BUG    ║${NC}"
-    echo -e "${LGREEN}${BOLD}╠═══════════════════════╣${NC}"
-    echo -e "${CYAN}║ 1) ☁️ VPS Server      ║${NC}"
-    echo -e "${CYAN}║ 2) 🏠 Local Client    ║${NC}"
-    echo -e "${CYAN}║ 3) 🔧 Fix VPS         ║${NC}"
-    echo -e "${CYAN}║ 4) 📊 Diagnostics     ║${NC}"
-    echo -e "${LGREEN}║ 5) 🛡️ Recovery       ║${NC}"
-    echo -e "${RED}║ 6) 🗑️ Uninstall      ║${NC}"
-    echo -e "${CYAN}║ 7) ❌ Exit           ║${NC}"
-    echo -e "${LGREEN}${BOLD}╚═══════════════════════╝${NC}"
+    echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
+    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v5.0             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║     ALL-IN-ONE FIXED                 ║${NC}"
+    echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║  1) ☁️  VPS Server Setup              ║${NC}"
+    echo -e "${CYAN}║  2) 🏠 Local Client Setup             ║${NC}"
+    echo -e "${CYAN}║  3) 🔧 Fix VPS Issues                 ║${NC}"
+    echo -e "${CYAN}║  4) 📊 Status Check                  ║${NC}"
+    echo -e "${LGREEN}║  5) 🛡️  Auto-Recovery                ║${NC}"
+    echo -e "${RED}║  6) 🗑️  Complete Uninstall           ║${NC}"
+    echo -e "${CYAN}║  7) ❌ Exit                           ║${NC}"
+    echo -e "${LGREEN}${BOLD}╚══════════════════════════════════════╝${NC}"
     
-    echo -ne "\n${CYAN}Choose: ${NC}"
+    echo -ne "\n${CYAN}Choose (1-7): ${NC}"
     read -r CHOICE
     
     case $CHOICE in
-      1) vps_setup ;;
+      1) vps_server ;;
       2) echo -e "${YELLOW}Paste VPS command:${NC}"; read CMD; eval "$CMD" ;;
-      3) iptables -F; iptables -I INPUT 1 -p udp --dport 55108 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE; netfilter-persistent save; echo "${GREEN}Fixed${NC}" ;;
-      4) diagnostics ;;
+      3) iptables -F; iptables -I INPUT 1 -p udp --dport 55108 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE; netfilter-persistent save; echo -e "${GREEN}Fixed${NC}" ;;
+      4) status_check ;;
       5) install_recovery ;;
       6) uninstall_all ;;
-      7) exit ;;
-      *) echo "${RED}Invalid${NC}"; sleep 1 ;;
+      7) exit 0 ;;
+      *) echo -e "${RED}Invalid${NC}"; sleep 1 ;;
     esac
   done
 }
 
 case "${1:-}" in
-  client) shift; local_setup "$@" ;;
-  fix|3) iptables -I INPUT 1 -p udp --dport 55108 -j ACCEPT; echo "${GREEN}Fixed${NC}" ;;
-  diagnose|4) diagnostics ;;
-  recovery|5) install_recovery ;;
+  client) shift; local_client "$@" ;;
   uninstall|6) uninstall_all ;;
+  status|4) status_check ;;
+  recovery|5) install_recovery ;;
   *) main_menu ;;
 esac
