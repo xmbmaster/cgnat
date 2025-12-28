@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v1.2.0 - AUTO-RECOVERY (Never Dies!)
-# Auto-restarts every 5min + Health checks
+# 🔥 CGNAT BYPASS v1.3.0 - FIXED UNINSTALL + AUTO-RECOVERY
+# Ubuntu 24.04 + Oracle Cloud ✅
 
 if [ $EUID != 0 ]; then exec sudo "$0" "$@"; fi
 
@@ -8,7 +8,37 @@ WGCONF="/etc/wireguard/wg0.conf"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 LGREEN='\033[92m'; CYAN='\033[36m'; BOLD='\033[1m'
 
-# ==================== AUTO-RECOVERY SYSTEM ====================
+# ==================== FIXED UNINSTALL ====================
+uninstall_all() {
+  echo -e "${YELLOW}${BOLD}🗑️  COMPLETE UNINSTALL${NC}"
+  echo -e "${CYAN}Stopping services...${NC}"
+  systemctl stop wg-quick@wg0 wg-monitor wg-monitor.timer 2>/dev/null || true
+  wg-quick down wg0 2>/dev/null || true
+  
+  echo -e "${CYAN}Removing configs...${NC}"
+  rm -rf /etc/wireguard $WGCONF /etc/iptables/rules.v* /etc/systemd/system/wg-monitor.*
+  
+  echo -e "${CYAN}Flushing firewall...${NC}"
+  iptables -F -t nat -F -t mangle -F -X -t nat -X -t mangle -X 2>/dev/null || true
+  iptables -P INPUT ACCEPT -P FORWARD ACCEPT -P OUTPUT ACCEPT
+  ip6tables -F -t nat -F -t mangle -F -X -t nat -X -t mangle -X 2>/dev/null || true
+  
+  echo -e "${CYAN}Resetting UFW...${NC}"
+  ufw --force disable 2>/dev/null || true
+  ufw --force reset 2>/dev/null || true
+  
+  echo -e "${CYAN}Removing packages...${NC}"
+  apt purge -y wireguard wireguard-tools ufw iptables-persistent netfilter-persistent 2>/dev/null || true
+  apt autoremove -y 2>/dev/null || true
+  
+  echo -e "${CYAN}Reloading systemd...${NC}"
+  systemctl daemon-reload 2>/dev/null || true
+  
+  echo -e "${GREEN}${BOLD}✅ UNINSTALL COMPLETE - SYSTEM CLEAN${NC}"
+  echo -e "${GREEN}All WireGuard configs, services, firewall rules REMOVED${NC}"
+  exit 0
+}
+
 install_autorecovery() {
   cat > /etc/systemd/system/wg-monitor.service << 'EOF'
 [Unit]
@@ -26,74 +56,32 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
   
-  cat > /etc/systemd/system/wg-monitor.timer << 'EOF'
-[Unit]
-Description=Run WG Monitor every 5 minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-  
   systemctl daemon-reload
-  systemctl enable --now wg-monitor.timer wg-monitor.service
-  echo -e "${GREEN}✅ AUTO-RECOVERY INSTALLED (5min checks)${NC}"
+  systemctl enable --now wg-monitor.service 2>/dev/null || true
+  echo -e "${GREEN}✅ AUTO-RECOVERY ACTIVE${NC}"
 }
 
-# ==================== HEALTH CHECK ====================
 health_check() {
   clear; echo -e "${CYAN}${BOLD}🔍 HEALTH CHECK${NC}"
-  
-  STATUS="🟢 UP"
-  [[ ! -f $WGCONF ]] && STATUS="🔴 NO CONFIG"
-  
-  WG_UP=$(wg show wg0 2>/dev/null | grep -c "transfer:")
-  [[ $WG_UP -eq 0 ]] && STATUS="🟡 NO TRAFFIC"
-  
-  PING_VPS=$(ping -c1 10.1.0.1 >/dev/null 2>&1 && echo "🟢" || echo "🔴")
-  PING_CLIENT=$(ping -c1 10.1.0.2 >/dev/null 2>&1 && echo "🟢" || echo "🔴")
-  
-  NAT_RULES=$(iptables -t nat -L | grep -c DNAT)
-  [[ $NAT_RULES -eq 0 ]] && STATUS="🟡 NO FORWARDING"
-  
-  echo -e "${LGREEN}Tunnel: $STATUS${NC}"
-  echo -e "VPS Ping: $PING_VPS | Client Ping: $PING_CLIENT${NC}"
-  echo -e "NAT Rules: $NAT_RULES | Auto-Recovery: $(systemctl is-active wg-monitor.timer 2>/dev/null && echo "🟢" || echo "🔴")${NC}"
-  
-  wg show 2>/dev/null || echo "No WG tunnel"
+  wg show 2>/dev/null || echo "❌ No tunnel"
+  systemctl status wg-quick@wg0 2>/dev/null | head -8 || echo "❌ Service down"
+  ufw status 2>/dev/null | head -6 || echo "No UFW"
+  iptables -t nat -L -n | grep -E "(DNAT|SNAT)" || echo "❌ No NAT rules"
+  systemctl status wg-monitor 2>/dev/null | head -3 || echo "No auto-recovery"
   read -p "Press Enter..."
 }
 
-# ==================== FORCE RESTART ====================
 force_restart() {
-  echo -e "${YELLOW}🔄 FORCE RESTARTING...${NC}"
-  systemctl stop wg-quick@wg0 2>/dev/null
-  wg-quick down wg0 2>/dev/null
+  echo -e "${YELLOW}🔄 FORCE RESTART${NC}"
+  systemctl stop wg-quick@wg0 wg-monitor 2>/dev/null || true
   sleep 2
-  
-  # Reload iptables
   netfilter-persistent reload 2>/dev/null || iptables -t nat -F
-  
-  # Restart tunnel
   systemctl start wg-quick@wg0
-  sleep 5
-  
-  # Verify
-  if wg show wg0 >/dev/null 2>&1; then
-    echo -e "${GREEN}✅ RESTARTED SUCCESSFULLY${NC}"
-  else
-    echo -e "${RED}❌ RESTART FAILED${NC}"
-  fi
+  sleep 3
+  wg show && echo -e "${GREEN}✅ RESTARTED${NC}" || echo -e "${RED}❌ FAILED${NC}"
 }
 
-# ==================== FIXED SETUP (from previous) ====================
 server_setup() {
-  echo -e "${LGREEN}${BOLD}☁️  VPS SERVER + AUTO-RECOVERY${NC}"
-  
   apt update && apt install -y wireguard wireguard-tools netfilter-persistent curl iputils-ping
   
   read -p "Public IP [auto]: " PUBIP
@@ -113,9 +101,8 @@ server_setup() {
   
   echo -e "\n${YELLOW}${BOLD}CLIENT COMMAND:${NC}"
   echo "sudo $0 client \"$SERVER_PUB\" $PUBIP $WGPORT \"$PORTS\""
-  read -p "Client Public Key: " CLIENT_PUB
+  read -p "Paste CLIENT public key: " CLIENT_PUB
   
-  # PERFECT CONFIG
   cat > $WGCONF << EOF
 [Interface]
 PrivateKey = $(cat /etc/wireguard/private.key)
@@ -123,9 +110,9 @@ Address = $WG_SIP/24
 ListenPort = $WGPORT
 
 PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE; netfilter-persistent save
-PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE; netfilter-persistent save
+PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE
 
-$(for p in $(echo $PORTS | tr ',' '\n'); do 
+$(for p in $(echo "$PORTS" | tr ',' '\n'); do 
   PROTO=$(echo $p | cut -d/ -f2); PORT=$(echo $p | cut -d/ -f1)
   echo "PostUp = iptables -t nat -A PREROUTING -p $PROTO --dport $PORT -j DNAT --to $WG_CIP"
   echo "PostDown = iptables -t nat -D PREROUTING -p $PROTO --dport $PORT -j DNAT --to $WG_CIP"
@@ -137,20 +124,16 @@ AllowedIPs = $WG_CIP/32
 PersistentKeepalive = 15
 EOF
   
-  # UFW + iptables
-  ufw reset >/dev/null 2>&1
+  ufw reset 2>/dev/null || true
   ufw allow $WGPORT/udp
   ufw allow OpenSSH
-  for p in $(echo $PORTS | tr ',' '\n'); do ufw allow $p; done
-  ufw enable
+  for p in $(echo "$PORTS" | tr ',' '\n'); do ufw allow "$p"; done
+  ufw enable 2>/dev/null || true
   
   systemctl enable --now wg-quick@wg0
   sleep 3
-  
-  # INSTALL AUTO-RECOVERY
   install_autorecovery
-  
-  echo -e "${GREEN}✅ SERVER + AUTO-RECOVERY INSTALLED${NC}"
+  echo -e "${GREEN}✅ SERVER READY + AUTO-RECOVERY${NC}"
 }
 
 client_setup() {
@@ -177,44 +160,46 @@ EOF
   
   systemctl enable --now wg-quick@wg0
   sleep 5
-  ping -c 3 $WG_SIP >/dev/null 2>&1 && echo -e "${GREEN}✅ CONNECTED${NC}" || echo -e "${YELLOW}Check VPS${NC}"
+  ping -c 3 $WG_SIP >/dev/null 2>&1 && echo -e "${GREEN}✅ CONNECTED${NC}" || echo -e "${YELLOW}Check VPS firewall${NC}"
 }
 
-# ==================== MAIN MENU ====================
+# ==================== FIXED MAIN MENU ====================
 main_menu() {
   while true; do
     clear
     echo -e "${LGREEN}${BOLD}╔══════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║  CGNAT BYPASS v1.2 AUTO-FIX  ║${NC}"
+    echo -e "${LGREEN}${BOLD}║  CGNAT BYPASS v1.3 FIXED     ║${NC}"
     echo -e "${LGREEN}${BOLD}╠══════════════════════════════╣${NC}"
     echo -e "${LGREEN}${BOLD}║ 1) ☁️  VPS Server Setup      ║${NC}"
-    echo -e "${LGREEN}${BOLD}║ 2) 🏠 Local Client           ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 2) 🏠 Local Client Setup     ║${NC}"
     echo -e "${LGREEN}${BOLD}║ 3) 🔧 Force Restart          ║${NC}"
-    echo -e "${LGREEN}${BOLD}║ 4) 🛡️  Install Auto-Recovery ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 4) 🛡️  Auto-Recovery         ║${NC}"
     echo -e "${LGREEN}${BOLD}║ 5) 📊 Health Check           ║${NC}"
-    echo -e "${LGREEN}${BOLD}║ 6) 🗑️  Uninstall             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║ 6) 🗑️  UNINSTALL (FIXED)    ║${NC}"
     echo -e "${LGREEN}${BOLD}║ 7) ❌ Exit                   ║${NC}"
     echo -e "${LGREEN}${BOLD}╚══════════════════════════════╝${NC}"
     
-    echo -ne "\n${CYAN}Choose: ${NC}"; read CHOICE
+    echo -ne "\n${CYAN}${BOLD}Choose (1-7): ${NC}"
+    read -r CHOICE
     
     case $CHOICE in
       1) server_setup ;;
-      2) echo -e "${YELLOW}Paste VPS command:${NC}"; read CMD; eval $CMD ;;
+      2) echo -e "${YELLOW}Paste VPS server command:${NC}"; read -r CMD; eval "$CMD" ;;
       3) force_restart ;;
       4) install_autorecovery ;;
       5) health_check ;;
-      6) uninstall_all ;;
-      7) exit ;;
-      *) echo -e "${RED}Invalid${NC}"; sleep 1 ;;
+      6) uninstall_all ;;     # ✅ FIXED - Calls correct function
+      7) exit 0 ;;
+      *) echo -e "${RED}Invalid option${NC}"; sleep 1 ;;
     esac
   done
 }
 
 case "${1:-}" in
   client) shift; client_setup "$@";;
-  autorecovery|monitor) install_autorecovery;;
-  health|check) health_check;;
-  restart|fix) force_restart;;
+  uninstall|remove|6) uninstall_all;;     # ✅ Command line uninstall
+  health|check|5) health_check;;
+  restart|fix|3) force_restart;;
+  autorecovery|monitor|4) install_autorecovery;;
   *) main_menu ;;
 esac
