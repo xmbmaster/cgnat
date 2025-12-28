@@ -1,8 +1,7 @@
 #!/bin/bash
-# All-in-One WireGuard Installer (VPS / Local / Uninstall)
-# Fixed for wg-quick parsing issues
-
-set -e
+# Auto WireGuard Installer for Oracle Cloud + Local Server
+# Handles package conflicts and includes uninstall
+# Version 1.0
 
 WGCONFLOC='/etc/wireguard/wg0.conf'
 WGPUBKEY='/etc/wireguard/publickey'
@@ -12,143 +11,93 @@ WGPORTSFILE='/etc/wireguard/forwarded_ports'
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-CYAN='\033[36m'
 NC='\033[0m'
 
-check_root() {
-  if [[ $EUID -ne 0 ]]; then
-    echo "Please run as root"
-    exit 1
-  fi
-}
+#---------------- Functions ----------------#
 
 stop_wireguard() {
   echo -e "${YELLOW}Stopping WireGuard...${NC}"
-  systemctl stop wg-quick@wg0 2>/dev/null || true
-  wg-quick down wg0 2>/dev/null || true
+  systemctl stop wg-quick@wg0 2>/dev/null
+  wg-quick down wg0 2>/dev/null
 }
 
-uninstall_wireguard() {
+uninstall_all() {
   stop_wireguard
-  echo -e "${YELLOW}Removing WireGuard packages and configs...${NC}"
-  apt remove wireguard -y
-  rm -f $WGCONFLOC $WGPUBKEY $WGCLIENTIPFILE $WGPORTSFILE
-  systemctl disable wg-quick@wg0 >/dev/null 2>&1 || true
-  echo -e "${GREEN}Uninstalled successfully${NC}"
+  echo -e "${YELLOW}Removing WireGuard and configs...${NC}"
+  apt remove --purge wireguard ufw -y
+  rm -rf /etc/wireguard
+  echo -e "${GREEN}Uninstall complete${NC}"
   exit
 }
 
-enable_ip_forward() {
-  echo -e "${YELLOW}Enabling IP forwarding...${NC}"
-  sysctl -w net.ipv4.ip_forward=1
+fix_conflicts() {
+  echo -e "${YELLOW}Fixing package conflicts...${NC}"
+  apt remove iptables-persistent netfilter-persistent -y
+  apt --fix-broken install -y
+  apt update
+}
+
+install_required() {
+  fix_conflicts
+  echo -e "${YELLOW}Installing WireGuard & UFW...${NC}"
+  apt install wireguard ufw -y
+}
+
+enable_ip_forwarding() {
   if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
   fi
+  sysctl -p
 }
 
-install_dependencies() {
-  echo -e "${YELLOW}Installing required packages...${NC}"
-  apt update
-  apt install -y wireguard iptables-persistent ufw
-}
-
-generate_keys() {
+create_keys() {
   echo -e "${YELLOW}Generating WireGuard keys...${NC}"
-  mkdir -p /etc/wireguard
-  umask 077
-  wg genkey | tee $WGCONFLOC.priv | wg pubkey | tee $WGPUBKEY
-  PRIVKEY=$(cat $WGCONFLOC.priv)
-  rm -f $WGCONFLOC.priv
+  umask 077 && wg genkey | tee $WGCONFLOC | wg pubkey | tee $WGPUBKEY
 }
 
-setup_firewall() {
-  echo -e "${YELLOW}Configuring firewall...${NC}"
-  ufw allow OpenSSH
-  ufw allow $WGPORT/udp
-  ufw --force enable
-}
+generate_server_conf() {
+  read -p "Server VPN IP [10.1.0.1]: " WG_SERVER_IP
+  WG_SERVER_IP=${WG_SERVER_IP:-10.1.0.1}
 
-create_vps_config() {
-  echo -e "${YELLOW}Creating VPS WireGuard config...${NC}"
-  read -p "Enter VPS public IP [auto-detect]: " PUBLIC_IP
-  PUBLIC_IP=${PUBLIC_IP:-$(curl -s ifconfig.me)}
-  read -p "Enter VPN Server IP [10.1.0.1]: " SERVER_IP
-  SERVER_IP=${SERVER_IP:-10.1.0.1}
-  read -p "Enter VPN client IP [10.1.0.2]: " CLIENT_IP
-  CLIENT_IP=${CLIENT_IP:-10.1.0.2}
-  read -p "Enter WireGuard port [55108]: " WGPORT
+  read -p "Client VPN IP [10.1.0.2]: " WG_CLIENT_IP
+  WG_CLIENT_IP=${WG_CLIENT_IP:-10.1.0.2}
+
+  read -p "WireGuard Port [55108]: " WGPORT
   WGPORT=${WGPORT:-55108}
 
-  CLIENT_PUBKEY=$(read -p "Paste client public key: " x; echo "$x")
+  PK_FOR_CLIENT=$(cat $WGPUBKEY)
 
-  cat > $WGCONFLOC <<EOF
-[Interface]
-PrivateKey = $(cat $WGCONFLOC)
-Address = $SERVER_IP/24
-ListenPort = $WGPORT
+  echo "[Interface]" > $WGCONFLOC
+  echo "PrivateKey = $(cat $WGCONFLOC)" >> $WGCONFLOC
+  echo "Address = $WG_SERVER_IP/24" >> $WGCONFLOC
+  echo "ListenPort = $WGPORT" >> $WGCONFLOC
+  echo "" >> $WGCONFLOC
 
-[Peer]
-PublicKey = $CLIENT_PUBKEY
-AllowedIPs = $CLIENT_IP/32
-EOF
+  read -p "Public Key from Client: " PK_FOR_SERVER
+  echo "[Peer]" >> $WGCONFLOC
+  echo "PublicKey = $PK_FOR_SERVER" >> $WGCONFLOC
+  echo "AllowedIPs = $WG_CLIENT_IP/32" >> $WGCONFLOC
 
-  chmod 600 $WGCONFLOC
-  systemctl enable wg-quick@wg0
-  systemctl start wg-quick@wg0
-  echo -e "${GREEN}VPS WireGuard setup complete!${NC}"
+  echo -e "${GREEN}Server config created at $WGCONFLOC${NC}"
 }
 
-create_local_config() {
-  echo -e "${YELLOW}Creating Local WireGuard client config...${NC}"
-  read -p "Enter Server Public IP: " SERVER_PUBLIC_IP
-  read -p "Enter Local VPN IP [10.1.0.2]: " CLIENT_IP
-  CLIENT_IP=${CLIENT_IP:-10.1.0.2}
-  read -p "Enter WireGuard port [55108]: " WGPORT
+generate_client_conf() {
+  read -p "Server Public IP: " PUBLIC_IP
+  read -p "Client VPN IP [10.1.0.2]: " WG_CLIENT_IP
+  WG_CLIENT_IP=${WG_CLIENT_IP:-10.1.0.2}
+
+  read -p "WireGuard Port [55108]: " WGPORT
   WGPORT=${WGPORT:-55108}
-  read -p "Paste Server Public Key: " SERVER_PUBKEY
 
-  cat > $WGCONFLOC <<EOF
-[Interface]
-PrivateKey = $(cat $WGPUBKEY)
-Address = $CLIENT_IP/24
+  PK_FOR_SERVER=$(cat $WGPUBKEY)
+  PK_FOR_CLIENT=$(wg genkey | tee /etc/wireguard/client_privatekey | wg pubkey)
 
-[Peer]
-PublicKey = $SERVER_PUBKEY
-AllowedIPs = 0.0.0.0/0
-Endpoint = $SERVER_PUBLIC_IP:$WGPORT
-PersistentKeepalive = 25
-EOF
-
-  chmod 600 $WGCONFLOC
-  systemctl enable wg-quick@wg0
-  systemctl start wg-quick@wg0
-  echo -e "${GREEN}Local WireGuard client setup complete!${NC}"
-}
-
-check_existing() {
-  if [[ -f $WGCONFLOC ]]; then
-    echo -e "${YELLOW}Existing WireGuard config detected.${NC}"
-  fi
-}
-
-# ******** MAIN ********
-check_root
-echo ""
-echo -e "Select option:"
-echo "1) VPS Server"
-echo "2) Local Client"
-echo "3) Uninstall WireGuard"
-read -p "Choice: " CHOICE
-
-install_dependencies
-enable_ip_forward
-generate_keys
-setup_firewall
-check_existing
-
-case $CHOICE in
-  1) create_vps_config ;;
-  2) create_local_config ;;
-  3) uninstall_wireguard ;;
-  *) echo "Invalid choice"; exit 1 ;;
-esac
+  echo "[Interface]" > $WGCONFLOC
+  echo "PrivateKey = $PK_FOR_CLIENT" >> $WGCONFLOC
+  echo "Address = $WG_CLIENT_IP/24" >> $WGCONFLOC
+  echo "" >> $WGCONFLOC
+  echo "[Peer]" >> $WGCONFLOC
+  echo "PublicKey = $PK_FOR_SERVER" >> $WGCONFLOC
+  echo "AllowedIPs = 0.0.0.0/0" >> $WGCONFLOC
+  echo "Endpoint = $PUBLIC_IP:$WGPORT" >> $WGCONFLOC
+  echo "PersistentKeepalive = 25"
