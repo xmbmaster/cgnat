@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v6.1 - SAFE ALL-IN-ONE
-# VPS + Local + Auto-Recovery + NO CasaOS Impact
+# 🔥 CGNAT BYPASS v6.3 - SAFE ALL-IN-ONE
+# VPS + Local + Auto-Recovery + NO iptables Touch
 
 if [ $EUID != 0 ]; then
   exec sudo "$0" "$@"
@@ -14,7 +14,7 @@ LGREEN='\033[92m'; CYAN='\033[36m'; BOLD='\033[1m'
 # ==================== SYSTEM SETUP ====================
 setup_system() {
   apt update >/dev/null 2>&1
-  apt install -y wireguard wireguard-tools iptables curl iputils-ping netfilter-persistent
+  apt install -y wireguard wireguard-tools curl iputils-ping netfilter-persistent
   sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
   echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 }
@@ -64,18 +64,6 @@ AllowedIPs = $WG_CLIENT_IP/32
 PersistentKeepalive = 15
 EOF
 
-  INTERFACE=$(ip route | grep default | awk '{print $5}')
-  iptables -F
-  iptables -t nat -F
-  iptables -I INPUT 1 -p udp --dport $WGPORT -j ACCEPT
-  iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE
-  for port_entry in $(echo "$SERVICE_PORTS" | tr ',' ' '); do
-    port=$(echo $port_entry | cut -d'/' -f1)
-    proto=$(echo $port_entry | cut -d'/' -f2)
-    iptables -t nat -A PREROUTING -p $proto --dport $port -j DNAT --to $WG_CLIENT_IP
-  done
-  netfilter-persistent save 2>/dev/null || true
-
   ufw allow $WGPORT/udp 2>/dev/null || true
   ufw allow OpenSSH 2>/dev/null || true
   for port_entry in $(echo "$SERVICE_PORTS" | tr ',' ' '); do
@@ -117,16 +105,6 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 15
 EOF
 
-  INTERFACE=$(ip route | grep default | awk '{print $5}')
-  iptables -t nat -F PREROUTING POSTROUTING
-  for port_entry in $(echo "$PORTS" | tr ',' ' '); do
-    port=$(echo $port_entry | cut -d'/' -f1)
-    proto=$(echo $port_entry | cut -d'/' -f2)
-    iptables -t nat -A PREROUTING -i wg0 -p $proto --dport $port -j DNAT --to 172.17.0.2:$port
-    iptables -t nat -A POSTROUTING -o $INTERFACE -p $proto -d 172.17.0.2 --dport $port -j MASQUERADE
-  done
-  netfilter-persistent save 2>/dev/null || true
-
   systemctl enable --now wg-quick@wg0
   sleep 5
 
@@ -167,8 +145,6 @@ status_check() {
   systemctl status wg-quick@wg0 2>/dev/null | head -10
   echo -e "\n${CYAN}Recovery:${NC}"
   systemctl status wg-monitor 2>/dev/null | head -5
-  echo -e "\n${CYAN}NAT Rules:${NC}"
-  iptables -t nat -L -n | grep DNAT || echo "❌ No rules"
   read -p "Press Enter..."
 }
 
@@ -176,10 +152,7 @@ status_check() {
 uninstall_all() {
   echo -e "${YELLOW}${BOLD}🗑️  SAFE UNINSTALL${NC}"
   systemctl stop wg-quick@wg0 wg-monitor 2>/dev/null || true
-  rm -rf /etc/wireguard $WGCONF /etc/iptables/rules.v* /etc/systemd/system/wg-*
-  iptables -F -t nat -F -X -t nat -X -t mangle -X
-  iptables -P INPUT ACCEPT -P FORWARD ACCEPT -P OUTPUT ACCEPT
-  netfilter-persistent save 2>/dev/null || true
+  rm -rf /etc/wireguard $WGCONF /etc/systemd/system/wg-*
   apt purge -y wireguard wireguard-tools netfilter-persistent 2>/dev/null || true
   echo -e "${GREEN}${BOLD}✅ CLEAN COMPLETE${NC}"
   echo -e "${YELLOW}CasaOS remains intact.${NC}"
@@ -191,7 +164,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v6.1             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v6.3             ║${NC}"
     echo -e "${LGREEN}${BOLD}║     SAFE ALL-IN-ONE                  ║${NC}"
     echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║  1) ☁️  VPS Server Setup              ║${NC}"
@@ -209,7 +182,7 @@ main_menu() {
     case $CHOICE in
       1) vps_server ;;
       2) echo -e "${YELLOW}Paste VPS command:${NC}"; read CMD; eval "$CMD" ;;
-      3) iptables -F; iptables -I INPUT 1 -p udp --dport 55108 -j ACCEPT; INTERFACE=$(ip route | grep default | awk '{print $5}'); iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE; netfilter-persistent save; echo -e "${GREEN}Fixed${NC}" ;;
+      3) ufw allow 55108/udp 2>/dev/null || true; echo -e "${GREEN}Fixed${NC}" ;;
       4) status_check ;;
       5) install_recovery ;;
       6) uninstall_all ;;
