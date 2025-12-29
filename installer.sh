@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v5.2 - ALL-IN-ONE FIXED
-# VPS + Local + POSTROUTING FIXED
+# 🔥 CGNAT BYPASS v6.0 - SAFE ALL-IN-ONE
+# VPS + Local + Auto-Recovery + NO CasaOS Impact
 
 if [ $EUID != 0 ]; then
   exec sudo "$0" "$@"
@@ -64,7 +64,6 @@ AllowedIPs = $WG_CLIENT_IP/32
 PersistentKeepalive = 15
 EOF
 
-  # FIXED POSTROUTING (use correct interface)
   INTERFACE=$(ip route | grep default | awk '{print $5}')
   iptables -F
   iptables -t nat -F
@@ -118,7 +117,6 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 15
 EOF
 
-  # Local forwarding to Docker
   INTERFACE=$(ip route | grep default | awk '{print $5}')
   iptables -t nat -F PREROUTING POSTROUTING
   for port_entry in $(echo "$PORTS" | tr ',' ' '); do
@@ -193,8 +191,8 @@ main_menu() {
   while true; do
     clear
     echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v5.2             ║${NC}"
-    echo -e "${LGREEN}${BOLD}║     ALL-IN-ONE FIXED                 ║${NC}"
+    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v6.0             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║     SAFE ALL-IN-ONE                  ║${NC}"
     echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║  1) ☁️  VPS Server Setup              ║${NC}"
     echo -e "${CYAN}║  2) 🏠 Local Client Setup             ║${NC}"
