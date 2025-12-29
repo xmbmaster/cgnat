@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v6.0 - SAFE ALL-IN-ONE
+# 🔥 CGNAT BYPASS v6.1 - SAFE ALL-IN-ONE
 # VPS + Local + Auto-Recovery + NO CasaOS Impact
 
 if [ $EUID != 0 ]; then
@@ -174,15 +174,15 @@ status_check() {
 
 # ==================== UNINSTALL ====================
 uninstall_all() {
+  echo -e "${YELLOW}${BOLD}🗑️  SAFE UNINSTALL${NC}"
   systemctl stop wg-quick@wg0 wg-monitor 2>/dev/null || true
   rm -rf /etc/wireguard $WGCONF /etc/iptables/rules.v* /etc/systemd/system/wg-*
   iptables -F -t nat -F -X -t nat -X -t mangle -X
   iptables -P INPUT ACCEPT -P FORWARD ACCEPT -P OUTPUT ACCEPT
-  ufw disable 2>/dev/null || true
-  apt purge -y wireguard wireguard-tools netfilter-persistent iptables ufw 2>/dev/null || true
-  apt autoremove -y 2>/dev/null || true
-  systemctl daemon-reload
+  netfilter-persistent save 2>/dev/null || true
+  apt purge -y wireguard wireguard-tools netfilter-persistent 2>/dev/null || true
   echo -e "${GREEN}${BOLD}✅ CLEAN COMPLETE${NC}"
+  echo -e "${YELLOW}CasaOS remains intact.${NC}"
   exit 0
 }
 
@@ -191,7 +191,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v6.0             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v6.1             ║${NC}"
     echo -e "${LGREEN}${BOLD}║     SAFE ALL-IN-ONE                  ║${NC}"
     echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║  1) ☁️  VPS Server Setup              ║${NC}"
