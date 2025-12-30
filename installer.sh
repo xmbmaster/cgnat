@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v8.5 - STABLE & FAST
-# Removed problematic packages, optimized installation
+# 🔥 CGNAT BYPASS v8.6 - FINAL STABLE VERSION
+# Fixed package conflicts, production-ready
 # Works on CasaOS, Ubuntu, Debian
 
 if [ $EUID != 0 ]; then
@@ -42,7 +42,7 @@ print_header() {
   clear
   echo ""
   echo "╔════════════════════════════════════════╗"
-  echo "║     CGNAT BYPASS v8.5 - STABLE         ║"
+  echo "║     CGNAT BYPASS v8.6 - FINAL          ║"
   echo "║        ALL-IN-ONE SOLUTION             ║"
   echo "╚════════════════════════════════════════╝"
   echo ""
@@ -59,29 +59,46 @@ quick_fix() {
   log_success "Package cache cleared"
 }
 
-# ==================== INSTALL MINIMAL DEPENDENCIES ====================
+# ==================== INSTALL DEPENDENCIES ====================
 install_dependencies() {
-  log_info "Installing minimal dependencies..."
+  log_info "Installing dependencies..."
   
   quick_fix
   
-  # Only essential packages - no problematic ones
+  # Install iptables and netfilter FIRST
+  log_info "Installing iptables and netfilter..."
   apt install -y \
-    curl \
-    iputils-ping \
-    net-tools \
     iptables \
     iptables-persistent \
     netfilter-persistent \
-    ufw \
-    2>&1 | grep -v "^Reading\|^Building\|^Selecting\|^Note"
+    2>&1 | grep -v "^Reading\|^Building\|^Selecting\|^Note" || true
   
   if ! command -v iptables &> /dev/null; then
     log_error "iptables installation failed"
     return 1
   fi
   
-  log_success "Dependencies installed"
+  log_success "iptables installed"
+  
+  # Install other tools (avoid UFW if it conflicts)
+  log_info "Installing other tools..."
+  apt install -y \
+    curl \
+    iputils-ping \
+    net-tools \
+    2>&1 | grep -v "^Reading\|^Building" || true
+  
+  # Try UFW, but don't fail if it has conflicts
+  log_info "Installing firewall (UFW)..."
+  apt install -y ufw 2>&1 | grep -v "^Reading\|^Building" || true
+  
+  # If UFW failed, at least we have iptables
+  if ! command -v ufw &> /dev/null; then
+    log_warning "UFW not available, using iptables only"
+  else
+    log_success "UFW installed"
+  fi
+  
   return 0
 }
 
@@ -95,7 +112,7 @@ install_wireguard() {
   apt install -y \
     wireguard \
     wireguard-tools \
-    2>&1 | grep -v "^Reading\|^Building"
+    2>&1 | grep -v "^Reading\|^Building" || true
   
   if command -v wg &> /dev/null; then
     log_success "WireGuard installed"
@@ -213,27 +230,31 @@ EOF
 
   chmod 600 "$WGCONF"
   
-  log_info "Configuring firewall..."
-  ufw --force enable >/dev/null 2>&1
-  ufw default deny incoming >/dev/null 2>&1
-  ufw default allow outgoing >/dev/null 2>&1
-  
-  ufw allow 22/tcp >/dev/null 2>&1
-  ufw allow 22/udp >/dev/null 2>&1
-  log_success "SSH allowed"
-  
-  ufw allow "$WGPORT/udp" >/dev/null 2>&1
-  log_success "WireGuard port $WGPORT/UDP allowed"
-  
-  IFS=',' read -ra PORTS <<< "$SERVICE_PORTS"
-  for port in "${PORTS[@]}"; do
-    port=$(echo "$port" | xargs)
-    ufw allow "$port/tcp" >/dev/null 2>&1
-    ufw allow "$port/udp" >/dev/null 2>&1
-    log_success "Port $port allowed"
-  done
+  # Setup firewall - try UFW, fallback if needed
+  if command -v ufw &> /dev/null; then
+    log_info "Configuring firewall (UFW)..."
+    ufw --force enable >/dev/null 2>&1
+    ufw default deny incoming >/dev/null 2>&1
+    ufw default allow outgoing >/dev/null 2>&1
+    
+    ufw allow 22/tcp >/dev/null 2>&1
+    ufw allow 22/udp >/dev/null 2>&1
+    ufw allow "$WGPORT/udp" >/dev/null 2>&1
+    
+    IFS=',' read -ra PORTS <<< "$SERVICE_PORTS"
+    for port in "${PORTS[@]}"; do
+      port=$(echo "$port" | xargs)
+      ufw allow "$port/tcp" >/dev/null 2>&1
+      ufw allow "$port/udp" >/dev/null 2>&1
+    done
+    
+    log_success "Firewall configured"
+  else
+    log_warning "UFW not available, using iptables only"
+  fi
   
   log_info "Setting up port forwarding..."
+  IFS=',' read -ra PORTS <<< "$SERVICE_PORTS"
   for port in "${PORTS[@]}"; do
     port=$(echo "$port" | xargs)
     iptables -t nat -A PREROUTING -p tcp --dport "$port" -j DNAT --to-destination "$WG_CLIENT_IP:$port" 2>/dev/null || true
@@ -436,15 +457,20 @@ repair_all() {
   echo "🔨 REPAIRING..."
   echo ""
   
-  log_info "Installing any missing dependencies..."
+  log_info "Clearing broken packages..."
+  quick_fix
+  
+  log_info "Reinstalling dependencies..."
   install_dependencies
   
   log_info "Restarting WireGuard..."
   systemctl restart wg-quick@wg0
   sleep 2
   
-  log_info "Reloading firewall..."
-  ufw reload >/dev/null 2>&1
+  if command -v ufw &> /dev/null; then
+    log_info "Reloading firewall..."
+    ufw reload >/dev/null 2>&1
+  fi
   
   log_info "Restarting monitor..."
   systemctl restart wg-monitor >/dev/null 2>&1
