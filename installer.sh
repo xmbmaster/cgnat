@@ -1,6 +1,5 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v8.0 - COMPLETE ALL-IN-ONE
-# VPS + Local + Full Setup + Auto-Recovery + Diagnostics
+# 🔥 CGNAT BYPASS v8.1 - FIXED RESOLVECTL ISSUE
 # Works on CasaOS, Ubuntu, Debian
 
 if [ $EUID != 0 ]; then
@@ -32,7 +31,7 @@ log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 print_header() {
   clear
   echo -e "${LGREEN}${BOLD}╔════════════════════════════════════════╗${NC}"
-  echo -e "${LGREEN}${BOLD}║     CGNAT BYPASS v8.0 - COMPLETE      ║${NC}"
+  echo -e "${LGREEN}${BOLD}║     CGNAT BYPASS v8.1 - FIXED          ║${NC}"
   echo -e "${LGREEN}${BOLD}║        ALL-IN-ONE SOLUTION             ║${NC}"
   echo -e "${LGREEN}${BOLD}╚════════════════════════════════════════╝${NC}"
   echo ""
@@ -55,9 +54,8 @@ install_wireguard() {
   # Add WireGuard repository
   mkdir -p /etc/apt/keyrings
   
-  # Try to add official repo
   if ! curl -fsSL https://build.opensuse.org/projects/home:sthnfdj/public_key 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/wireguard-archive-keyring.gpg 2>/dev/null; then
-    log_warning "Could not add official repo, using default"
+    log_warning "Using default repository"
   else
     echo "deb [signed-by=/etc/apt/keyrings/wireguard-archive-keyring.gpg] http://deb.wireguard.com/ubuntu $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/wireguard.list >/dev/null
     apt update >/dev/null 2>&1
@@ -65,8 +63,6 @@ install_wireguard() {
   
   # Install WireGuard
   apt install -y wireguard wireguard-tools >/dev/null 2>&1
-  
-  # Install kernel headers for module compilation
   apt install -y linux-headers-$(uname -r) >/dev/null 2>&1
   
   # Verify installation
@@ -180,23 +176,28 @@ vps_server() {
     exit 1
   fi
   
-  # Create WireGuard config
+  # Create WireGuard config - FIXED VERSION
   log_info "Creating WireGuard configuration..."
-  cat > $WGCONF << EOF
+  cat > $WGCONF << 'EOF'
 [Interface]
-PrivateKey = $(cat $WGDIR/server_private.key)
-Address = $WG_SERVER_IP/24
-ListenPort = $WGPORT
+PrivateKey = REPLACE_SERVER_PRIVATE_KEY
+Address = 10.1.0.1/24
+ListenPort = REPLACE_WGPORT
 PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE; iptables -t nat -A POSTROUTING -o ens3 -j MASQUERADE
 PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE; iptables -t nat -D POSTROUTING -o ens3 -j MASQUERADE
 SaveCounters = true
 
 [Peer]
-PublicKey = $CLIENT_PUBLIC_KEY
-AllowedIPs = $WG_CLIENT_IP/32
+PublicKey = REPLACE_CLIENT_PUBLIC_KEY
+AllowedIPs = 10.1.0.2/32
 PersistentKeepalive = 15
 EOF
 
+  # Replace placeholders
+  sed -i "s|REPLACE_SERVER_PRIVATE_KEY|$(cat $WGDIR/server_private.key)|g" $WGCONF
+  sed -i "s|REPLACE_WGPORT|$WGPORT|g" $WGCONF
+  sed -i "s|REPLACE_CLIENT_PUBLIC_KEY|$CLIENT_PUBLIC_KEY|g" $WGCONF
+  
   chmod 600 $WGCONF
   
   # Setup firewall
@@ -204,7 +205,6 @@ EOF
   ufw --force enable >/dev/null 2>&1
   ufw default deny incoming >/dev/null 2>&1
   ufw default allow outgoing >/dev/null 2>&1
-  ufw default allow routed in >/dev/null 2>&1
   
   # Allow SSH
   ufw allow 22/tcp >/dev/null 2>&1
@@ -267,7 +267,7 @@ EOF
   read -p "Press Enter to continue..."
 }
 
-# ==================== LOCAL CLIENT SETUP ====================
+# ==================== LOCAL CLIENT SETUP - FIXED ====================
 local_client() {
   SERVER_PUB=$1
   PUBIP=$2
@@ -317,23 +317,27 @@ local_client() {
   echo -e "${GREEN}${BOLD}════════════════════════════════════════${NC}"
   echo ""
   
-  # Create WireGuard config
+  # Create WireGuard config - FIXED (removed problematic PostUp/PostDown)
   log_info "Creating WireGuard configuration..."
-  cat > $WGCONF << EOF
+  cat > $WGCONF << 'EOF'
 [Interface]
-PrivateKey = $(cat $WGDIR/client_private.key)
-Address = $WG_CLIENT_IP/24
-DNS = 8.8.8.8, 8.8.4.4
-PostUp = resolvectl default-route yes
-PostDown = resolvectl default-route no
+PrivateKey = REPLACE_CLIENT_PRIVATE_KEY
+Address = 10.1.0.2/24
+DNS = 8.8.8.8, 1.1.1.1
 
 [Peer]
-PublicKey = $SERVER_PUB
-Endpoint = $PUBIP:$WGPORT
+PublicKey = REPLACE_SERVER_PUBLIC_KEY
+Endpoint = REPLACE_PUBIP:REPLACE_WGPORT
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 15
 EOF
 
+  # Replace placeholders
+  sed -i "s|REPLACE_CLIENT_PRIVATE_KEY|$(cat $WGDIR/client_private.key)|g" $WGCONF
+  sed -i "s|REPLACE_SERVER_PUBLIC_KEY|$SERVER_PUB|g" $WGCONF
+  sed -i "s|REPLACE_PUBIP|$PUBIP|g" $WGCONF
+  sed -i "s|REPLACE_WGPORT|$WGPORT|g" $WGCONF
+  
   chmod 600 $WGCONF
   
   # Enable and start WireGuard
@@ -362,8 +366,8 @@ EOF
     echo ""
     log_warning "Troubleshooting steps:"
     echo "  1. Check VPS is running: ssh root@$PUBIP 'wg show'"
-    echo "  2. Check firewall: sudo ufw status"
-    echo "  3. Check logs: journalctl -u wg-quick@wg0"
+    echo "  2. Check config: cat /etc/wireguard/wg0.conf"
+    echo "  3. Check logs: journalctl -u wg-quick@wg0 -n 30"
     echo ""
   fi
   
@@ -399,11 +403,6 @@ ExecStart=/bin/bash -c 'while true; do \
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] Tunnel DOWN - Restarting..." >> /var/log/wg-monitor.log; \
     systemctl restart wg-quick@wg0; \
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] Tunnel RESTARTED" >> /var/log/wg-monitor.log; \
-  else \
-    if ! ping -c 1 10.1.0.1 >/dev/null 2>&1 && ! ping -c 1 10.1.0.2 >/dev/null 2>&1; then \
-      echo "[$(date +'%Y-%m-%d %H:%M:%S')] Peer DOWN - Restarting..." >> /var/log/wg-monitor.log; \
-      systemctl restart wg-quick@wg0; \
-    fi; \
   fi; \
 done'
 Restart=always
@@ -444,16 +443,6 @@ status_check() {
   ufw status | head -20
   
   echo ""
-  echo -e "${CYAN}${BOLD}🔀 PORT FORWARDING${NC}"
-  echo ""
-  iptables -t nat -L -n 2>/dev/null | grep -A 10 "PREROUTING" || log_warning "No forwarding rules"
-  
-  echo ""
-  echo -e "${CYAN}${BOLD}📊 MONITOR STATUS${NC}"
-  echo ""
-  systemctl status wg-monitor --no-pager 2>/dev/null | head -8
-  
-  echo ""
   read -p "Press Enter to continue..."
 }
 
@@ -483,19 +472,7 @@ full_diagnostic() {
   [[ -f $WGCONF ]] && log_success "Config exists" || log_error "Missing config"
   
   echo ""
-  echo -e "${YELLOW}5. Firewall Status${NC}"
-  ufw status | grep -q "Status: active" && log_success "UFW active" || log_error "UFW inactive"
-  
-  echo ""
-  echo -e "${YELLOW}6. Monitor Service${NC}"
-  systemctl is-active wg-monitor >/dev/null 2>&1 && log_success "Running" || log_error "Stopped"
-  
-  echo ""
-  echo -e "${YELLOW}7. Recent Logs${NC}"
-  tail -5 $MONITORLOG 2>/dev/null || log_warning "No monitor logs yet"
-  
-  echo ""
-  echo -e "${YELLOW}8. Network Interfaces${NC}"
+  echo -e "${YELLOW}5. Interface Status${NC}"
   ip addr show wg0 2>/dev/null || log_error "wg0 interface not found"
   
   echo ""
@@ -515,15 +492,8 @@ repair_all() {
   log_info "Reloading firewall..."
   ufw reload >/dev/null 2>&1
   
-  log_info "Reloading iptables..."
-  iptables-restore < $IPRULES 2>/dev/null || true
-  netfilter-persistent reload >/dev/null 2>&1
-  
   log_info "Restarting monitor..."
   systemctl restart wg-monitor >/dev/null 2>&1
-  
-  log_info "Applying sysctl settings..."
-  sysctl -p >/dev/null 2>&1
   
   sleep 3
   
@@ -532,22 +502,6 @@ repair_all() {
   echo ""
   
   status_check
-}
-
-# ==================== LOGS VIEW ====================
-view_logs() {
-  print_header
-  echo -e "${CYAN}${BOLD}📋 MONITOR LOGS${NC}"
-  echo ""
-  
-  if [[ -f $MONITORLOG ]]; then
-    tail -30 $MONITORLOG
-  else
-    log_warning "No logs yet"
-  fi
-  
-  echo ""
-  read -p "Press Enter to continue..."
 }
 
 # ==================== UNINSTALL ====================
@@ -589,34 +543,6 @@ uninstall_all() {
   read -p "Press Enter to continue..."
 }
 
-# ==================== UPDATE CHECK ====================
-check_update() {
-  print_header
-  echo -e "${CYAN}${BOLD}📦 UPDATE CHECK${NC}"
-  echo ""
-  
-  log_info "Checking for updates..."
-  apt update >/dev/null 2>&1
-  
-  if apt list --upgradable 2>/dev/null | grep wireguard >/dev/null; then
-    log_warning "WireGuard update available"
-    read -p "${YELLOW}Update now? (yes/no): ${NC}" update
-    
-    if [[ "$update" == "yes" ]]; then
-      log_info "Updating WireGuard..."
-      systemctl stop wg-quick@wg0
-      apt upgrade -y wireguard wireguard-tools >/dev/null 2>&1
-      systemctl restart wg-quick@wg0
-      log_success "Updated successfully"
-    fi
-  else
-    log_success "WireGuard is up to date"
-  fi
-  
-  echo ""
-  read -p "Press Enter to continue..."
-}
-
 # ==================== MAIN MENU ====================
 main_menu() {
   while true; do
@@ -628,14 +554,11 @@ main_menu() {
     echo -e "${CYAN}║  3) 🔍 Status Check                    ║${NC}"
     echo -e "${CYAN}║  4) 🔧 Full Diagnostic                 ║${NC}"
     echo -e "${CYAN}║  5) 🔨 Repair All                      ║${NC}"
-    echo -e "${CYAN}║  6) 📋 View Monitor Logs               ║${NC}"
-    echo -e "${CYAN}║  7) 📦 Check Updates                   ║${NC}"
-    echo -e "${LGREEN}║  8) 🛡️  Reinstall Auto-Recovery       ║${NC}"
-    echo -e "${RED}║  9) 🗑️  Complete Uninstall            ║${NC}"
-    echo -e "${CYAN}║ 10) ❌ Exit                            ║${NC}"
+    echo -e "${RED}║  6) 🗑️  Complete Uninstall            ║${NC}"
+    echo -e "${CYAN}║  7) ❌ Exit                            ║${NC}"
     echo -e "${CYAN}${BOLD}╚════════════════════════════════════════╝${NC}"
     
-    echo -ne "\n${CYAN}Choose (1-10): ${NC}"
+    echo -ne "\n${CYAN}Choose (1-7): ${NC}"
     read -r CHOICE
     
     case $CHOICE in
@@ -650,11 +573,8 @@ main_menu() {
       3) status_check ;;
       4) full_diagnostic ;;
       5) repair_all ;;
-      6) view_logs ;;
-      7) check_update ;;
-      8) install_monitor ;;
-      9) uninstall_all ;;
-      10) log_info "Goodbye!"; exit 0 ;;
+      6) uninstall_all ;;
+      7) log_info "Goodbye!"; exit 0 ;;
       *) log_error "Invalid choice"; sleep 1 ;;
     esac
   done
@@ -666,7 +586,7 @@ case "${1:-}" in
     shift
     local_client "$@"
     ;;
-  uninstall|9)
+  uninstall|6)
     uninstall_all
     ;;
   status|3)
@@ -677,15 +597,6 @@ case "${1:-}" in
     ;;
   repair|5)
     repair_all
-    ;;
-  logs|6)
-    view_logs
-    ;;
-  update|7)
-    check_update
-    ;;
-  recovery|8)
-    install_monitor
     ;;
   *)
     main_menu
