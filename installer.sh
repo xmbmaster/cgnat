@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v6.3 - SAFE ALL-IN-ONE
+# 🔥 CGNAT BYPASS v6.4 - SAFE ALL-IN-ONE
 # VPS + Local + Auto-Recovery + NO iptables Touch
 
 if [ $EUID != 0 ]; then
@@ -164,7 +164,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${LGREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v6.3             ║${NC}"
+    echo -e "${LGREEN}${BOLD}║        CGNAT BYPASS v6.4             ║${NC}"
     echo -e "${LGREEN}${BOLD}║     SAFE ALL-IN-ONE                  ║${NC}"
     echo -e "${LGREEN}${BOLD}╠══════════════════════════════════════╣${NC}"
     echo -e "${CYAN}║  1) ☁️  VPS Server Setup              ║${NC}"
