@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v8.3 - FULLY POLISHED
-# All color codes fixed, clean input prompts
+# 🔥 CGNAT BYPASS v8.4 - COMPLETE FIX
+# Auto-installs all missing packages
 # Works on CasaOS, Ubuntu, Debian
 
 if [ $EUID != 0 ]; then
@@ -13,7 +13,6 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-LGREEN='\033[0;92m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -43,10 +42,47 @@ print_header() {
   clear
   echo ""
   echo "╔════════════════════════════════════════╗"
-  echo "║     CGNAT BYPASS v8.3 - FINAL FIX      ║"
+  echo "║     CGNAT BYPASS v8.4 - FINAL FIX      ║"
   echo "║        ALL-IN-ONE SOLUTION             ║"
   echo "╚════════════════════════════════════════╝"
   echo ""
+}
+
+# ==================== INSTALL ALL DEPENDENCIES ====================
+install_dependencies() {
+  log_info "Installing all dependencies..."
+  
+  apt update >/dev/null 2>&1
+  
+  # Install essential tools
+  apt install -y \
+    curl \
+    gnupg2 \
+    lsb-release \
+    ubuntu-keyring \
+    ca-certificates \
+    iputils-ping \
+    net-tools \
+    resolvconf \
+    openresolv \
+    2>/dev/null
+  
+  # Install iptables FIRST - this is critical
+  log_info "Installing iptables..."
+  apt install -y iptables iptables-persistent netfilter-persistent >/dev/null 2>&1
+  
+  # Verify iptables is installed
+  if ! command -v iptables &> /dev/null; then
+    log_error "iptables installation failed"
+    return 1
+  fi
+  
+  log_success "iptables installed"
+  
+  # Install firewall
+  apt install -y ufw >/dev/null 2>&1
+  
+  return 0
 }
 
 # ==================== INSTALL WIREGUARD ====================
@@ -55,8 +91,6 @@ install_wireguard() {
   
   apt remove -y wireguard wireguard-tools 2>/dev/null || true
   apt autoremove -y >/dev/null 2>&1
-  apt update >/dev/null 2>&1
-  apt install -y curl gnupg2 lsb-release ubuntu-keyring ca-certificates >/dev/null 2>&1
   
   mkdir -p /etc/apt/keyrings
   
@@ -84,12 +118,17 @@ install_wireguard() {
 setup_system() {
   log_info "Setting up system..."
   
+  # Install dependencies first
+  if ! install_dependencies; then
+    log_error "Dependency installation failed"
+    exit 1
+  fi
+  
+  # Then install WireGuard
   if ! install_wireguard; then
     log_error "Cannot continue without WireGuard"
     exit 1
   fi
-  
-  apt install -y curl iputils-ping iptables-persistent netfilter-persistent ufw net-tools resolvconf openresolv >/dev/null 2>&1
   
   mkdir -p "$WGDIR"
   chmod 700 "$WGDIR"
@@ -405,6 +444,9 @@ repair_all() {
   print_header
   echo "🔨 REPAIRING..."
   echo ""
+  
+  log_info "Installing any missing dependencies..."
+  install_dependencies
   
   log_info "Restarting WireGuard..."
   systemctl restart wg-quick@wg0
