@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🔥 CGNAT BYPASS v8.4 - COMPLETE FIX
-# Auto-installs all missing packages
+# 🔥 CGNAT BYPASS v8.5 - STABLE & FAST
+# Removed problematic packages, optimized installation
 # Works on CasaOS, Ubuntu, Debian
 
 if [ $EUID != 0 ]; then
@@ -42,46 +42,46 @@ print_header() {
   clear
   echo ""
   echo "╔════════════════════════════════════════╗"
-  echo "║     CGNAT BYPASS v8.4 - FINAL FIX      ║"
+  echo "║     CGNAT BYPASS v8.5 - STABLE         ║"
   echo "║        ALL-IN-ONE SOLUTION             ║"
   echo "╚════════════════════════════════════════╝"
   echo ""
 }
 
-# ==================== INSTALL ALL DEPENDENCIES ====================
-install_dependencies() {
-  log_info "Installing all dependencies..."
-  
+# ==================== QUICK PACKAGE FIX ====================
+quick_fix() {
+  log_info "Fixing broken packages..."
+  apt clean >/dev/null 2>&1
+  apt autoclean >/dev/null 2>&1
+  dpkg --configure -a >/dev/null 2>&1
+  apt --fix-broken install -y >/dev/null 2>&1
   apt update >/dev/null 2>&1
+  log_success "Package cache cleared"
+}
+
+# ==================== INSTALL MINIMAL DEPENDENCIES ====================
+install_dependencies() {
+  log_info "Installing minimal dependencies..."
   
-  # Install essential tools
+  quick_fix
+  
+  # Only essential packages - no problematic ones
   apt install -y \
     curl \
-    gnupg2 \
-    lsb-release \
-    ubuntu-keyring \
-    ca-certificates \
     iputils-ping \
     net-tools \
-    resolvconf \
-    openresolv \
-    2>/dev/null
+    iptables \
+    iptables-persistent \
+    netfilter-persistent \
+    ufw \
+    2>&1 | grep -v "^Reading\|^Building\|^Selecting\|^Note"
   
-  # Install iptables FIRST - this is critical
-  log_info "Installing iptables..."
-  apt install -y iptables iptables-persistent netfilter-persistent >/dev/null 2>&1
-  
-  # Verify iptables is installed
   if ! command -v iptables &> /dev/null; then
     log_error "iptables installation failed"
     return 1
   fi
   
-  log_success "iptables installed"
-  
-  # Install firewall
-  apt install -y ufw >/dev/null 2>&1
-  
+  log_success "Dependencies installed"
   return 0
 }
 
@@ -92,17 +92,10 @@ install_wireguard() {
   apt remove -y wireguard wireguard-tools 2>/dev/null || true
   apt autoremove -y >/dev/null 2>&1
   
-  mkdir -p /etc/apt/keyrings
-  
-  if ! curl -fsSL https://build.opensuse.org/projects/home:sthnfdj/public_key 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/wireguard-archive-keyring.gpg 2>/dev/null; then
-    log_warning "Using default repository"
-  else
-    echo "deb [signed-by=/etc/apt/keyrings/wireguard-archive-keyring.gpg] http://deb.wireguard.com/ubuntu $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/wireguard.list >/dev/null
-    apt update >/dev/null 2>&1
-  fi
-  
-  apt install -y wireguard wireguard-tools >/dev/null 2>&1
-  apt install -y linux-headers-$(uname -r) >/dev/null 2>&1
+  apt install -y \
+    wireguard \
+    wireguard-tools \
+    2>&1 | grep -v "^Reading\|^Building"
   
   if command -v wg &> /dev/null; then
     log_success "WireGuard installed"
@@ -118,13 +111,11 @@ install_wireguard() {
 setup_system() {
   log_info "Setting up system..."
   
-  # Install dependencies first
   if ! install_dependencies; then
     log_error "Dependency installation failed"
     exit 1
   fi
   
-  # Then install WireGuard
   if ! install_wireguard; then
     log_error "Cannot continue without WireGuard"
     exit 1
